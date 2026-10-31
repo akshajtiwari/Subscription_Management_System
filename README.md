@@ -26,7 +26,7 @@ cd backend && uv run pytest && uv run ruff check app tests
 cd frontend && npm run lint && npm run build
 ```
 
-For a local SQLite run, omit `DATABASE_URL` and run the seed and server commands from `backend/`. The demo API is documented at `http://localhost:8001/docs` when running. The current implementation has no migration history, scheduled worker, PDF output, or full browser integration suite; the API contract in `docs/API_CONTRACT.md` is still a proposed target for those pieces.
+For a local SQLite run, omit `DATABASE_URL` and run the seed and server commands from `backend/`. The demo API is documented at `http://localhost:8001/docs` when running. Run `cd backend && uv run alembic upgrade head` for the initial schema migration, and `cd backend && uv run python -m app.worker` for the separate demo billing poller. The current implementation still lacks PDF output and a full browser integration suite; `docs/API_CONTRACT.md` remains the target for those pieces.
 
 This repository contains a static HTML, CSS, and JavaScript mockup for the workflows in `Subscription_Management_System.pdf`. It uses sample records and keeps changes in memory for the current browser session. No account, billing, or payment data is saved or sent.
 
