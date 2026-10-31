@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, or_, cast, String
 from sqlalchemy.exc import IntegrityError
@@ -80,17 +80,35 @@ KINDS = {
 ADMIN_ONLY = {"products", "plans", "tax-rules", "discount-rules"}
 
 
+def normalized_email(value):
+    value = value.strip().lower()
+    if len(value) > 320 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+        raise ValueError("invalid_email")
+    return value
+
+
 class Credentials(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     email: str
-    password: str
-    name: str = ""
+    password: str = Field(max_length=256)
+    name: str = Field(default="", max_length=160)
+    normalize_email = field_validator("email")(normalized_email)
 
 
 class ResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     email: str
+    normalize_email = field_validator("email")(normalized_email)
+
+
+class ResetConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(max_length=256)
 
 
 class Payload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     payload: dict = Field(default_factory=dict)
 
 
@@ -269,6 +287,8 @@ def payload_fingerprint(action: str, body: dict):
 
 @app.post("/api/v1/auth/register", status_code=201)
 def register(body: Credentials, session: DbSession = Depends(db)):
+    if not body.name.strip():
+        fail("name_required")
     if not valid_password(body.password):
         fail("password_rule")
     user = User(
@@ -320,21 +340,26 @@ def reset_request(body: ResetRequest, session: DbSession = Depends(db)):
 
 
 @app.post("/api/v1/auth/password-resets/confirm")
-def reset_confirm(body: dict, session: DbSession = Depends(db)):
-    if not valid_password(body.get("new_password", "")):
+def reset_confirm(body: ResetConfirmation, session: DbSession = Depends(db)):
+    if not valid_password(body.new_password):
         fail("password_rule")
     for entry in session.scalars(
         select(Event)
-        .where(Event.kind == "outbox", Event.action == "password_reset")
+        .where(
+            Event.kind == "outbox",
+            Event.action == "password_reset",
+            Event.detail["token"].as_string() == body.token,
+        )
         .order_by(Event.id.desc())
+        .with_for_update()
     ):
         if (
-            hmac.compare_digest(entry.detail.get("token", ""), body.get("token", ""))
+            hmac.compare_digest(entry.detail.get("token", ""), body.token)
             and entry.detail["expires_at"] > datetime.now(timezone.utc).isoformat()
             and not entry.detail.get("used")
         ):
             user = session.get(User, entry.record_id)
-            user.password_hash = hash_password(body["new_password"])
+            user.password_hash = hash_password(body.new_password)
             entry.detail = {**entry.detail, "used": True}
             session.commit()
             return {"status": "changed"}
@@ -355,17 +380,47 @@ def update_account(
     return public_user(user)
 
 
+def outbox_view(entry, session):
+    if entry.action == "password_reset":
+        recipient = session.get(User, entry.record_id)
+    else:
+        invoice = session.get(Invoice, entry.record_id)
+        recipient = session.get(User, invoice.customer_id) if invoice else None
+    return {
+        "id": entry.id,
+        "action": entry.action,
+        "record_id": entry.record_id,
+        "detail": entry.detail,
+        "created_at": entry.created_at.isoformat(),
+        "recipient": recipient.email if recipient else "",
+    }
+
+
 @app.get("/api/v1/outbox")
 def outbox(user: User = Depends(current), session: DbSession = Depends(db)):
     allowed(user, "admin")
     return {
         "data": [
-            {"id": e.id, "action": e.action, "record_id": e.record_id, "detail": e.detail}
-            for e in session.scalars(
-                select(Event).where(Event.kind == "outbox").order_by(Event.id.desc()).limit(50)
+            outbox_view(entry, session)
+            for entry in session.scalars(
+                select(Event).where(Event.kind == "outbox").order_by(Event.id.desc()).limit(100)
             )
         ]
     }
+
+
+@app.get("/api/v1/outbox/{entry_id}")
+def outbox_detail(entry_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
+    allowed(user, "admin")
+    entry = session.get(Event, entry_id)
+    if not entry or entry.kind != "outbox":
+        fail("not_found", 404)
+    return outbox_view(entry, session)
+
+
+@app.get("/api/v1/health")
+def health():
+    return {"status": "ok", "demo": True}
 
 
 def people_page(session, role, search, limit, cursor, active=None):
@@ -397,6 +452,8 @@ def staff(
 @app.post("/api/v1/staff", status_code=201)
 def add_staff(body: Credentials, user: User = Depends(current), session: DbSession = Depends(db)):
     allowed(user, "admin")
+    if not body.name.strip():
+        fail("name_required")
     if not valid_password(body.password):
         fail("password_rule")
     staff_user = User(
@@ -412,6 +469,15 @@ def add_staff(body: Credentials, user: User = Depends(current), session: DbSessi
         session.rollback()
         fail("duplicate_email", 409)
     return public_user(staff_user)
+
+
+@app.get("/api/v1/staff/{staff_id}")
+def staff_detail(staff_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
+    allowed(user, "admin")
+    member = session.get(User, staff_id)
+    if not member or member.role != "staff":
+        fail("not_found", 404)
+    return public_user(member)
 
 
 @app.patch("/api/v1/staff/{staff_id}")
