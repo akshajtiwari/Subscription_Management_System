@@ -1,4 +1,4 @@
-.PHONY: setup python-env dev-api dev-web test build format format-check
+.PHONY: setup python-env dev dev-api dev-web test build format format-check
 
 python-env:
 	pyenv exec python -m venv backend/.venv
@@ -9,6 +9,9 @@ setup: python-env
 
 dev-api:
 	cd backend && .venv/bin/python -m uvicorn app.main:app --reload --port 8001
+
+dev:
+	cd backend && .venv/bin/python -m app.dev
 
 dev-web:
 	npm --prefix frontend run dev
