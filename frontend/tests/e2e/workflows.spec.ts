@@ -278,6 +278,11 @@ test('mobile navigation keeps the toggle in place and restores keyboard focus', 
   const create = page.getByRole('button', { name: 'New product', exact: true });
   await create.click();
   await expect(dialog(page)).toBeVisible();
+  await dialog(page)
+    .locator('label')
+    .filter({ hasText: /^Name$/ })
+    .click();
+  await expect(dialog(page).getByLabel('Name', { exact: true })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(create).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
