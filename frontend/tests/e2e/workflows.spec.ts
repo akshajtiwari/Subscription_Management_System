@@ -1,58 +1,74 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-const dialog = (page: Page) => page.getByRole('dialog').last();
+const main = (page: Page) => page.locator('#main-content');
+const surface = (page: Page) => page.locator('#main-content, dialog[open]').last();
+const status = (page: Page) => main(page).locator('.record-main .panelhead .status').first();
 async function login(page: Page, email = 'admin@brightloop.demo', password = 'DemoAdmin!1') {
   await page.goto('/');
   await page.getByLabel('Email', { exact: true }).fill(email);
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.locator('h1')).not.toHaveText('Sign in');
+  await expect(main(page).locator('h1')).toBeVisible();
 }
 async function nav(page: Page, name: string) {
   if ((page.viewportSize()?.width || 1280) <= 860)
     await page.getByRole('button', { name: 'Expand navigation', exact: true }).click();
-  await page.locator('.sidebar').getByRole('button', { name, exact: true }).click();
+  const label =
+    name === 'Plans' ? 'Billing plans' : name === 'Quotation templates' ? 'Quote templates' : name;
+  const button = page
+    .locator('.sidebar')
+    .getByRole('button', { name: label, exact: true, includeHidden: true });
+  if (!(await button.isVisible()))
+    await button.locator('xpath=ancestor::details[1]').locator('summary').click();
+  await button.click();
 }
 async function close(page: Page) {
-  await dialog(page).getByRole('button', { name: 'Close dialog', exact: true }).click();
+  if (await page.locator('dialog[open]').count())
+    await surface(page).getByRole('button', { name: 'Close dialog', exact: true }).click();
+  else
+    await main(page)
+      .getByRole('button', { name: /^← Back/ })
+      .click();
 }
 async function save(page: Page, name: string) {
-  await dialog(page).getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(dialog(page).getByRole('heading', { name, exact: true })).toBeVisible();
-  return Number(new URL(page.url()).hash.split('/').at(-1));
+  await surface(page).getByRole('button', { name: 'Save', exact: true }).click();
+  const open = main(page).getByRole('button', { name: `Open ${name}`, exact: true });
+  await expect(open).toBeVisible();
+  await open.click();
 }
 async function review(page: Page, action: string, title: string) {
-  await dialog(page).getByRole('button', { name: action, exact: true }).click();
-  await dialog(page).getByRole('button', { name: title, exact: true }).click();
-  await expect(page.getByRole('heading', { name: title, exact: true })).toHaveCount(0);
+  await surface(page).getByRole('button', { name: action, exact: true }).click();
+  await page.getByRole('dialog').last().getByRole('button', { name: title, exact: true }).click();
+  await expect(page.locator('dialog[open]')).toHaveCount(0);
   await expect(page.getByRole('status').filter({ hasText: 'Action completed' })).toBeVisible();
 }
 async function total(page: Page, title: string, expected: string) {
   await expect(
-    dialog(page)
+    main(page)
       .locator('.invoice-totals>div')
       .filter({ has: page.locator('dt', { hasText: new RegExp(`^${title}$`) }) })
       .locator('dd'),
   ).toHaveText(expected);
 }
 async function chooseProduct(page: Page, name: string, variant = '') {
-  await dialog(page).getByPlaceholder('Name, SKU, or variant').fill(name);
-  await dialog(page)
+  await surface(page).getByPlaceholder('Name, SKU, or variant').fill(name);
+  await surface(page)
     .getByRole('checkbox', { name: `Select ${name}${variant ? ` ${variant}` : ''}`, exact: true })
     .check();
-  await dialog(page).getByRole('button', { name: 'Add selected', exact: true }).click();
+  await surface(page).getByRole('button', { name: 'Add selected', exact: true }).click();
 }
-async function fill(field: Locator, value: string) {
-  await field.fill(value);
+async function create(page: Page, resource: string) {
+  await nav(page, resource);
+  await main(page).getByRole('button', { name: 'Create new', exact: true }).click();
 }
 
-test('the complete sales, billing, payment, report, and approval workflow', async ({
+test('sales through billing, partial payment, collection reporting, and customer approval', async ({
   page,
   request,
   browser,
   isMobile,
 }, testInfo) => {
-  test.skip(isMobile, 'The mobile project verifies navigation and focus separately.');
+  test.skip(isMobile, 'The mobile project verifies navigation, forms, and focus separately.');
   const suffix = Date.now().toString(36);
   const productName = `Seats ${suffix}`,
     planName = `Monthly ${suffix}`,
@@ -66,127 +82,147 @@ test('the complete sales, billing, payment, report, and approval workflow', asyn
   await login(page);
   const token = await page.evaluate(() => localStorage.getItem('brightloop-token'));
   const auth = { Authorization: `Bearer ${token}` };
-  await nav(page, 'Products');
-  await page.getByRole('button', { name: 'New product', exact: true }).click();
-  await fill(dialog(page).getByLabel('Name', { exact: true }), productName);
-  await fill(dialog(page).getByLabel('Sales price', { exact: true }), '20');
-  await fill(dialog(page).getByLabel('Cost price', { exact: true }), '8');
-  await dialog(page).getByRole('button', { name: 'Add variant' }).click();
-  await fill(dialog(page).getByLabel('Variant name', { exact: true }), 'Odoo');
-  await fill(dialog(page).getByLabel('Brand', { exact: true }), 'Odoo');
-  await fill(dialog(page).getByLabel('Price adjustment', { exact: true }), '560');
+  const monthStart = `${new Date().toISOString().slice(0, 7)}-01`;
+  const initialReport = await request.get(
+    `/api/v1/reports/summary?start=${monthStart}&end=${new Date().toISOString().slice(0, 10)}`,
+    { headers: auth },
+  );
+  const initialCollections = Number(
+    (await initialReport.json()).overview.currencies.USD?.collections || 0,
+  );
+
+  await create(page, 'Products');
+  await surface(page).getByLabel('Product name', { exact: true }).fill(productName);
+  await surface(page).getByLabel('Sales price', { exact: true }).fill('20');
+  await surface(page).getByLabel('Cost price', { exact: true }).fill('8');
+  await surface(page).getByRole('button', { name: 'Add variant' }).click();
+  await surface(page).getByLabel('Variant name', { exact: true }).fill('Odoo');
+  await surface(page).getByLabel('Brand', { exact: true }).fill('Odoo');
+  await surface(page).getByLabel('Price adjustment', { exact: true }).fill('560');
   await save(page, productName);
-  await expect(dialog(page).getByRole('cell', { name: '$560.00', exact: true })).toBeVisible();
+  await expect(surface(page).getByLabel('Price adjustment', { exact: true })).toHaveValue('560');
   await close(page);
 
-  await nav(page, 'Plans');
-  await page.getByRole('button', { name: 'New plan', exact: true }).click();
-  await fill(dialog(page).getByLabel('Name', { exact: true }), planName);
-  await fill(dialog(page).getByLabel('Plan fee', { exact: true }), '100');
-  await dialog(page).getByLabel('Allow pause and resume').check();
-  await dialog(page).getByLabel('Allow early closure').check();
-  await dialog(page).getByLabel('Allow renewal', { exact: true }).check();
+  await create(page, 'Plans');
+  await surface(page).getByLabel('Plan name', { exact: true }).fill(planName);
+  await surface(page).getByLabel('Plan fee', { exact: true }).fill('100');
+  await surface(page).getByLabel('Allow pause and resume').check();
+  await surface(page).getByLabel('Allow early closure').check();
+  await surface(page).getByLabel('Allow renewal', { exact: true }).check();
   await save(page, planName);
   await close(page);
 
-  await nav(page, 'Tax rules');
-  await page.getByRole('button', { name: 'New tax rule' }).click();
-  await fill(dialog(page).getByLabel('Name', { exact: true }), `Tax ${suffix}`);
-  await fill(dialog(page).getByLabel('Rate (%)', { exact: true }), '5');
-  await fill(dialog(page).getByLabel('Country code', { exact: true }), 'US');
+  await create(page, 'Tax rules');
+  await surface(page).getByLabel('Rule name', { exact: true }).fill(`Tax ${suffix}`);
+  await surface(page).getByLabel('Rate (%)', { exact: true }).fill('5');
+  await surface(page).getByLabel('Country code', { exact: true }).fill('CA');
   await save(page, `Tax ${suffix}`);
   await close(page);
 
-  await nav(page, 'Discount rules');
-  await page.getByRole('button', { name: 'New discount rule' }).click();
-  await fill(dialog(page).getByLabel('Name', { exact: true }), `Discount ${suffix}`);
-  await fill(dialog(page).getByLabel('Percentage', { exact: true }), '10');
-  await fill(dialog(page).getByLabel('Usage limit', { exact: true }), '1');
-  await dialog(page).getByLabel('Applies to', { exact: true }).selectOption('products');
-  await dialog(page).getByRole('button', { name: 'Select products', exact: true }).click();
+  await create(page, 'Discount rules');
+  await surface(page).getByLabel('Rule name', { exact: true }).fill(`Discount ${suffix}`);
+  await surface(page).getByLabel('Percentage', { exact: true }).fill('10');
+  await surface(page).getByLabel('Usage limit', { exact: true }).fill('1');
+  await surface(page).getByLabel('Applies to', { exact: true }).selectOption('products');
+  await surface(page).getByRole('button', { name: 'Select products', exact: true }).click();
   await chooseProduct(page, productName);
   await save(page, `Discount ${suffix}`);
   await close(page);
 
-  await nav(page, 'Quotation templates');
-  await page.getByRole('button', { name: 'New quotation template' }).click();
-  await fill(dialog(page).getByLabel('Name', { exact: true }), offerName);
-  await dialog(page)
+  await create(page, 'Quotation templates');
+  await surface(page).getByLabel('Template name', { exact: true }).fill(offerName);
+  await surface(page)
     .getByLabel('Plan', { exact: true })
-    .selectOption({ label: `${planName} · $100.00` });
-  await dialog(page).getByRole('button', { name: 'Add product', exact: true }).click();
+    .selectOption({ label: `${planName} · 100.00` });
+  await surface(page).getByRole('button', { name: 'Add product', exact: true }).click();
   await chooseProduct(page, productName, 'Odoo');
-  await fill(dialog(page).getByLabel(`Quantity for ${productName}`, { exact: true }), '2');
+  await surface(page).getByLabel(`Quantity for ${productName}`, { exact: true }).fill('2');
   await save(page, offerName);
   await close(page);
 
-  await nav(page, 'Subscriptions');
-  await page.getByRole('button', { name: 'New subscription', exact: true }).click();
-  await dialog(page)
+  await create(page, 'Subscriptions');
+  await surface(page)
     .getByLabel('Customer', { exact: true })
     .selectOption({ label: `${customerName} · ${email}` });
-  await dialog(page)
+  await surface(page)
     .getByLabel('Quotation template', { exact: true })
     .selectOption({ label: offerName });
-  await fill(dialog(page).getByLabel('Billing country code', { exact: true }), 'US');
-  await dialog(page).getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(dialog(page).locator('.detail-status .status')).toHaveText('Draft');
-  const subscriptionId = Number(new URL(page.url()).hash.split('/').at(-1));
+  await surface(page).getByLabel('Billing country code', { exact: true }).fill('CA');
+  await surface(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(
+    main(page).getByRole('heading', { name: 'Subscriptions', exact: true }),
+  ).toBeVisible();
+  const subscriptions = await request.get(
+    `/api/v1/subscriptions?search=${encodeURIComponent(customerName)}&sort=newest`,
+    { headers: auth },
+  );
+  // The owning list must refresh before opening its newly saved subscription.
+  const subscriptionId = (await subscriptions.json()).data[0].id;
+  await main(page).getByRole('row').filter({ hasText: customerName }).getByRole('button').click();
+  await expect(status(page)).toHaveText('Draft');
   await review(page, 'Quote', 'Quote subscription');
-  await expect(dialog(page).locator('.detail-status .status')).toHaveText('Quotation');
+  await expect(status(page)).toHaveText('Quotation');
   await review(page, 'Confirm', 'Confirm subscription');
-  await expect(dialog(page).locator('.detail-status .status')).toHaveText('Confirmed');
+  await expect(status(page)).toHaveText('Confirmed');
   await review(page, 'Activate', 'Activate subscription');
-  await expect(dialog(page).locator('.detail-status .status')).toHaveText('Active');
-  await expect(dialog(page).locator('.history')).toContainText('Activate');
+  await expect(status(page)).toHaveText('Active');
+  await expect(main(page).locator('.history')).toContainText('Activated');
   await close(page);
 
   await nav(page, 'Billing runs');
-  await page.getByRole('button', { name: 'Run billing', exact: true }).click();
-  await dialog(page).getByRole('button', { name: 'Run billing', exact: true }).click();
+  await main(page).getByRole('button', { name: 'Run billing', exact: true }).click();
+  await surface(page).getByRole('button', { name: 'Run billing', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Billing complete' })).toBeVisible();
-  await close(page);
-  const invoices = await request.get('/api/v1/invoices?limit=100', { headers: auth });
-  const invoice = (await invoices.json()).data.find(
+  const bills = await request.get('/api/v1/invoices?limit=100', { headers: auth });
+  const invoice = (await bills.json()).data.find(
     (row: any) => row.subscription_id === subscriptionId,
   );
   expect(invoice.total).toBe('1201.20');
   await page.goto(`/#invoices/${invoice.id}`);
-  await expect(dialog(page).getByRole('heading', { name: invoice.number })).toBeVisible();
-  await total(page, 'Amount due', '$1,201.20');
+  await total(page, 'Amount due', '1,201.20');
   await review(page, 'Confirm', 'Confirm invoice');
-  await expect(dialog(page).locator('.detail-status .status')).toHaveText('Confirmed');
+  await expect(status(page)).toHaveText('Confirmed');
   await review(page, 'Send', 'Send invoice');
   const downloadPromise = page.waitForEvent('download');
-  await dialog(page).getByRole('button', { name: 'PDF', exact: true }).click();
+  await main(page).getByRole('button', { name: 'Download PDF', exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe(`${invoice.number}.pdf`);
   await download.saveAs(testInfo.outputPath('invoice.pdf'));
   for (const [value, due] of [
-    ['201.20', '$1,000.00'],
-    ['1000', '$0.00'],
+    ['201.20', '1,000.00'],
+    ['1000', '0.00'],
   ]) {
-    await dialog(page).getByRole('button', { name: 'Record payment', exact: true }).click();
-    await fill(dialog(page).getByLabel('Amount (USD)', { exact: true }), value);
-    await dialog(page).getByRole('button', { name: 'Record payment', exact: true }).click();
+    await main(page).getByRole('button', { name: 'Record payment', exact: true }).click();
+    await surface(page).getByLabel('Amount (USD)', { exact: true }).fill(value);
+    await surface(page).getByRole('button', { name: 'Record payment', exact: true }).click();
     await total(page, 'Amount due', due);
-    await expect(dialog(page).getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
+    await expect(main(page).getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
   }
-  await expect(dialog(page).locator('.detail-status .status')).toHaveText('Paid');
+  await expect(status(page)).toHaveText('Paid');
   await close(page);
   await nav(page, 'Reports');
-  await expect(page.locator('.metric-strip')).toContainText('$1,201.20');
-  await expect(page.locator('.collection-chart')).toContainText('$1,201.20');
+  const collectionTotal = (initialCollections + 1201.2).toLocaleString('en', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  await expect(main(page).locator('.metric-strip')).toContainText(collectionTotal);
+  await expect(main(page).locator('.collection-chart')).toContainText(collectionTotal);
+  await main(page).getByRole('button', { name: 'Outstanding', exact: true }).click();
+  await expect(main(page).getByRole('heading', { name: 'Outstanding over time' })).toBeVisible();
+  await main(page).getByRole('button', { name: 'Overdue invoices', exact: true }).click();
+  await expect(
+    main(page).getByRole('heading', { name: 'Overdue invoices over time' }),
+  ).toBeVisible();
 
-  const customerContext = await browser.newContext({ baseURL: 'http://127.0.0.1:5175' });
-  const customer = await customerContext.newPage();
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:5175' });
+  const customer = await context.newPage();
   await login(customer, email, 'CustomerPass!1');
   await customer.goto(`/#subscriptions/${subscriptionId}`);
-  await expect(dialog(customer).locator('.detail-status .status')).toHaveText('Active');
-  await dialog(customer).getByRole('button', { name: 'Request Pause', exact: true }).click();
-  await dialog(customer).getByRole('button', { name: 'Send request', exact: true }).click();
-  await expect(dialog(customer).locator('.scheduled-change')).toContainText('Pending');
-  const requests = await request.get('/api/v1/requests', { headers: auth });
+  await expect(status(customer)).toHaveText('Active');
+  await main(customer).getByRole('button', { name: 'Pause', exact: true }).click();
+  await surface(customer).getByRole('button', { name: 'Send request', exact: true }).click();
+  await expect(main(customer).locator('.scheduled-change')).toContainText('Pending');
+  const requests = await request.get('/api/v1/requests?limit=100', { headers: auth });
   const change = (await requests.json()).data.find(
     (row: any) => row.subscription_id === subscriptionId,
   );
@@ -195,29 +231,30 @@ test('the complete sales, billing, payment, report, and approval workflow', asyn
   const subscription = await request.get(`/api/v1/subscriptions/${subscriptionId}`, {
     headers: auth,
   });
-  const due = (await subscription.json()).next_billing_date;
   const applied = await request.post('/api/v1/billing-runs', {
     headers: { ...auth, 'Idempotency-Key': `pause-${suffix}` },
-    data: { due_on: due, subscription_ids: [subscriptionId] },
+    data: {
+      due_on: (await subscription.json()).next_billing_date,
+      subscription_ids: [subscriptionId],
+    },
   });
   expect(applied.status()).toBe(202);
   await customer.reload();
-  await expect(dialog(customer).locator('.detail-status .status')).toHaveText('Paused');
-  await expect(
-    dialog(customer).getByRole('button', { name: 'Request Resume', exact: true }),
-  ).toBeVisible();
-  await customerContext.close();
+  await expect(status(customer)).toHaveText('Paused');
+  await expect(main(customer).getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+  await context.close();
 });
 
-test('staff and customer navigation enforces their roles', async ({ page, request, isMobile }) => {
+test('staff and customer navigation enforces roles', async ({ page, request, isMobile }) => {
   test.skip(isMobile);
   await login(page, 'staff@brightloop.demo', 'DemoStaff!1');
   await nav(page, 'Products');
-  await expect(page.getByRole('button', { name: 'New product', exact: true })).toHaveCount(0);
+  await expect(main(page).getByRole('button', { name: 'Create new', exact: true })).toHaveCount(0);
   await expect(
     page.locator('.sidebar').getByRole('button', { name: 'Staff members', exact: true }),
   ).toHaveCount(0);
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.locator('.avatar').click();
+  await main(page).getByRole('button', { name: 'Sign out', exact: true }).click();
   await login(page, 'customer@brightloop.demo', 'DemoCustomer!1');
   await expect(
     page.locator('.sidebar').getByRole('button', { name: 'My subscriptions', exact: true }),
@@ -233,7 +270,11 @@ test('staff and customer navigation enforces their roles', async ({ page, reques
   ).toBe(403);
 });
 
-test('password reset completes through the demo outbox', async ({ page, request, isMobile }) => {
+test('password reset shows a neutral confirmation and accepts its outbox link', async ({
+  page,
+  request,
+  isMobile,
+}) => {
   test.skip(isMobile);
   const email = `reset-${Date.now()}@example.test`;
   await request.post('/api/v1/auth/register', {
@@ -246,20 +287,28 @@ test('password reset completes through the demo outbox', async ({ page, request,
   await page.goto('/');
   await page.getByRole('button', { name: 'Forgot password', exact: true }).click();
   await page.getByLabel('Email', { exact: true }).fill(email);
-  await page.getByRole('button', { name: 'Request reset', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Set new password' })).toBeVisible();
+  await page.getByRole('button', { name: 'Send reset link', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible();
   const outbox = await request.get('/api/v1/outbox', {
     headers: { Authorization: `Bearer ${token}` },
   });
   const entry = (await outbox.json()).data.find((row: any) => row.recipient === email);
-  await page.getByLabel('Reset token', { exact: true }).fill(entry.detail.token);
-  await page.getByLabel('Password', { exact: true }).fill('ChangedPassword!2');
-  await page.getByRole('button', { name: 'Change password', exact: true }).click();
+  await page.goto(`/?reset_token=${encodeURIComponent(entry.detail.token)}`);
+  await page.getByLabel('New password', { exact: true }).fill('ChangedPassword!2');
+  await page.getByLabel('Confirm password', { exact: true }).fill('DifferentPassword!2');
+  await page.getByRole('button', { name: 'Set password', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Passwords do not match');
+  await page.getByLabel('Confirm password', { exact: true }).fill('ChangedPassword!2');
+  await page.getByRole('button', { name: 'Set password', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Password set' })).toBeVisible();
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.locator('h1')).toHaveText('Subscriptions');
+  await page.getByLabel('Email', { exact: true }).fill(email);
+  await page.getByLabel('Password', { exact: true }).fill('ChangedPassword!2');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(main(page).locator('h1')).toHaveText('My account');
 });
 
-test('mobile navigation keeps the toggle in place and restores keyboard focus', async ({
+test('mobile menu keeps its toggle in place and forms preserve keyboard focus', async ({
   page,
   isMobile,
 }) => {
@@ -274,24 +323,25 @@ test('mobile navigation keeps the toggle in place and restores keyboard focus', 
   expect(after?.y).toBe(before?.y);
   await page.keyboard.press('Escape');
   await expect(toggle).toBeFocused();
-  await nav(page, 'Products');
-  const create = page.getByRole('button', { name: 'New product', exact: true });
-  await create.click();
-  await expect(dialog(page)).toBeVisible();
-  await dialog(page)
+  await create(page, 'Products');
+  await main(page)
     .locator('label')
-    .filter({ hasText: /^Name$/ })
+    .filter({ hasText: /^Product name$/ })
     .click();
-  await expect(dialog(page).getByLabel('Name', { exact: true })).toBeFocused();
-  await page.keyboard.press('Escape');
-  await expect(create).toBeFocused();
+  await expect(main(page).getByLabel('Product name', { exact: true })).toBeFocused();
+  await close(page);
+  await expect(main(page).getByRole('button', { name: 'Create new', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Notes', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Interaction notes' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Notes', exact: true })).toBeFocused();
 });
 
-test('failed saves preserve form values and can be retried', async ({ page, isMobile }) => {
+test('failed saves keep the entered values available for retry', async ({ page, isMobile }) => {
   test.skip(isMobile);
   await login(page);
-  await nav(page, 'Products');
+  await create(page, 'Products');
   let attempts = 0;
   await page.route('**/api/v1/products', async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
@@ -304,13 +354,12 @@ test('failed saves preserve form values and can be retried', async ({ page, isMo
       });
     return route.continue();
   });
-  await page.getByRole('button', { name: 'New product', exact: true }).click();
   const name = `Retry product ${Date.now()}`;
-  await dialog(page).getByLabel('Name', { exact: true }).fill(name);
-  await dialog(page).getByLabel('Sales price', { exact: true }).fill('20');
-  await dialog(page).getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(dialog(page).getByRole('alert')).toBeVisible();
-  await expect(dialog(page).getByLabel('Name', { exact: true })).toHaveValue(name);
+  await main(page).getByLabel('Product name', { exact: true }).fill(name);
+  await main(page).getByLabel('Sales price', { exact: true }).fill('20');
+  await main(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(main(page).getByRole('alert')).toBeVisible();
+  await expect(main(page).getByLabel('Product name', { exact: true })).toHaveValue(name);
   await save(page, name);
   expect(attempts).toBe(2);
 });
