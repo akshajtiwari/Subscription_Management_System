@@ -1,4 +1,4 @@
-"""Run both local development services with the current virtual environment."""
+"""Run local development services with the current virtual environment."""
 
 import os
 from pathlib import Path
@@ -41,6 +41,9 @@ def main():
             )
         )
         processes.append(
+            subprocess.Popen([sys.executable, "-m", "app.worker"], cwd=backend, env=environment)
+        )
+        processes.append(
             subprocess.Popen(
                 [
                     "npm",
@@ -59,6 +62,7 @@ def main():
         )
         print("Brightloop frontend: http://localhost:5173", flush=True)
         print("Brightloop API: http://localhost:8001", flush=True)
+        print("Brightloop billing worker started", flush=True)
         while all(process.poll() is None for process in processes):
             time.sleep(0.5)
         raise SystemExit(

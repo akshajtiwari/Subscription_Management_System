@@ -1,4 +1,4 @@
-.PHONY: setup python-env dev dev-api dev-web test test-e2e build format format-check verify
+.PHONY: setup python-env dev dev-api dev-web worker test test-e2e build format format-check verify
 
 python-env:
 	pyenv exec python -m venv backend/.venv
@@ -15,6 +15,9 @@ dev:
 
 dev-web:
 	npm --prefix frontend run dev
+
+worker:
+	cd backend && .venv/bin/python -m app.worker
 
 test:
 	cd backend && .venv/bin/python -m pytest
