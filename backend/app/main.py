@@ -20,7 +20,7 @@ from .rules import invoice_amount, money, next_date
 app = FastAPI(title="Brightloop demo API", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 SECRET = os.getenv("DEMO_SECRET", "local-demo-only-change-me").encode()
-KINDS = {"products", "plans", "tax-rules", "discount-rules", "quotation-templates", "subscriptions", "requests"}
+KINDS = {"products", "plans", "tax-rules", "discount-rules", "quotation-templates", "subscriptions", "requests", "billing-runs"}
 ADMIN_ONLY = {"products", "plans", "tax-rules", "discount-rules"}
 TRANSITIONS = {"quote": ("draft", "quotation"), "confirm": ("quotation", "confirmed"), "activate": ("confirmed", "active"), "pause": ("active", "paused"), "resume": ("paused", "active"), "close": ("active", "closed")}
 
@@ -301,7 +301,10 @@ def billing_run(body: dict, idempotency_key: str = Header(...), user: User = Dep
         except (KeyError, ValueError) as exc:
             counts["failed_count"] += 1
             counts["failures"].append({"subscription_id": subscription.id, "reason": str(exc)})
-    result = {"id": secrets.token_hex(5), "status": "complete", **counts}
+    run = Record(kind="billing-runs", number=f"RUN-{secrets.token_hex(4).upper()}", status="complete", payload={"due_on": due_on.isoformat(), **counts})
+    session.add(run)
+    session.flush()
+    result = record_json(run)
     session.add(Idempotency(key=key, action="billing_run", result=result))
     session.commit()
     return result
@@ -433,7 +436,7 @@ def my_subscription(record_id: int, user: User = Depends(current), session: DbSe
 def create_record(kind: str, body: Payload, user: User = Depends(current), session: DbSession = Depends(db)):
     if kind not in KINDS:
         fail("not_found", 404)
-    if kind == "requests":
+    if kind in {"requests", "billing-runs"}:
         fail("forbidden", 403)
     allowed(user, "admin" if kind in ADMIN_ONLY else "admin", *([] if kind in ADMIN_ONLY else ["staff"]))
     payload = body.payload.copy()
@@ -492,15 +495,29 @@ def subscription_action(record_id: int, action: str, if_match: str | None = Head
         transition = TRANSITIONS.get(action)
         if not transition or record.status != transition[0]:
             fail("invalid_transition", 409)
+        if action == "confirm" and record.payload.get("quote_expires_at", "9999-12-31") < date.today().isoformat():
+            fail("quotation_expired", 409)
         if action in {"pause", "close"}:
             plan = get_record(session, "plans", record.payload["plan_id"], user)
             if action == "pause" and not plan.payload.get("allow_pause") or action == "close" and not plan.payload.get("allow_early_close"):
                 fail("plan_disallows_action", 409)
         record.status = transition[1]
+        if action == "quote":
+            validity = max(int(record.payload.get("validity_days", 30)), 1)
+            record.payload = {**record.payload, "quote_expires_at": (date.today() + timedelta(days=validity)).isoformat()}
+        if action == "activate":
+            record.payload = {**record.payload, "next_billing_date": max(record.payload["start_date"], date.today().isoformat())}
     record.version += 1
     event(session, "subscriptions", record.id, action, user.id)
     session.commit()
     return record_json(record)
+
+
+@app.get("/api/v1/subscriptions/{record_id}/history")
+def subscription_history(record_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
+    get_record(session, "subscriptions", record_id, user)
+    rows = session.scalars(select(Event).where(Event.kind == "subscriptions", Event.record_id == record_id).order_by(Event.id))
+    return {"data": [{"action": row.action, "actor_id": row.actor_id, "created_at": row.created_at.isoformat()} for row in rows]}
 
 
 @app.post("/api/v1/me/subscriptions/{record_id}/requests", status_code=201)
