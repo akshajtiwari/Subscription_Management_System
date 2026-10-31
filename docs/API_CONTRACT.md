@@ -1,6 +1,6 @@
 # Brightloop API Contract · Proposed v1
 
-**Status:** Review-ready proposal, not an implemented API. **Source:** `Subscription_Management_System.pdf`. The approved `wireframes/` mockup is the UI contract: API data must fill those screens without changing their visible labels, copy, typography, spacing, colors, or screen order. Display text belongs to the UI; API error codes and data must not introduce new on-screen prose without a design decision.
+**Status:** Review-ready proposal, not an implemented API. **Source:** `Subscription_Management_System.pdf`. The frontend owns display text and visual design; the API supplies data and stable error codes.
 
 The PDF specifies the workflows and roles, but not every billing policy. **Required** below means stated by the PDF. **Proposed** means an implementation choice needed to make an interface testable. Open decisions at the end must be settled before financial calculations go live.
 
@@ -132,7 +132,7 @@ A quotation template is `{id,name,plan_id,validity_days,lines,active,version}`. 
 }
 ```
 
-`tax_mode` is `auto | explicit` (**proposed**). With `auto`, `tax_rule_ids` must be empty and the server applies eligible admin rules. With `explicit`, at least one eligible ID is required; this corresponds to choosing a named tax rule in the mockup. `quantity` is a positive integer; plan `minimum_quantity` must be satisfied. `start_date <= expiry_date`, `payment_terms_days >= 0`, and all referenced accounts and catalog items must exist and be active. `template_id` is optional; explicit `lines` override copied template lines only when supplied. The server resolves price, tax, and amount; clients cannot submit them as authoritative fields.
+`tax_mode` is `auto | explicit` (**proposed**). With `auto`, `tax_rule_ids` must be empty and the server applies eligible admin rules. With `explicit`, at least one eligible ID is required; this corresponds to choosing a named tax rule in the interface. `quantity` is a positive integer; plan `minimum_quantity` must be satisfied. `start_date <= expiry_date`, `payment_terms_days >= 0`, and all referenced accounts and catalog items must exist and be active. `template_id` is optional; explicit `lines` override copied template lines only when supplied. The server resolves price, tax, and amount; clients cannot submit them as authoritative fields.
 
 The response includes `{id,number,customer_id,plan_id,template_id,start_date,expiry_date,payment_terms_days,status,billing_state,quote_expires_at,next_billing_date,lines,version,created_at,updated_at}`. A resolved line includes a stable line ID, product and variant snapshots, quantity, unit price, tax breakdown, and amount. `status` is `draft | quotation | confirmed | active | closed`; `billing_state` is `running | paused` only while Active. Invalid transitions return `409 invalid_transition`. An expired quotation cannot be confirmed without requoting. A paused or closed subscription cannot be billed. Whether activation and renewal are automatic, and exact expiry boundaries, remain open decisions.
 
@@ -169,7 +169,7 @@ An invoice moves `draft → confirmed → paid`; `draft` or an unpaid `confirmed
 
 ## 7. UI-to-API handoff
 
-| Approved mockup interaction | API source or command |
+| Frontend interaction | API source or command |
 | --- | --- |
 | Product checkbox overlay; search by name, SKU, variant | `GET /catalog-items?search=...` |
 | Selected product lines and tax dropdown | `GET /catalog-items`, `GET /tax-rules`, then `POST /subscriptions` |
@@ -178,7 +178,7 @@ An invoice moves `draft → confirmed → paid`; `draft` or an unpaid `confirmed
 | Overview, reports, overdue queue | Reporting endpoints |
 | Customer portal | `/me`, `/me/subscriptions`, `/me/invoices` |
 
-The client retains draft form state and picker selection locally until submit. The API returns data and stable error codes, not page headings, helper text, button labels, or visual tokens. Implemented screens must be visually compared against the approved mockup at the same viewport and state; any new visible copy or UI state needs explicit design approval.
+The client retains draft form state and picker selection locally until submit. The API returns data and stable error codes, not page headings, helper text, button labels, or visual tokens. Review implemented screens at desktop and mobile sizes, including loading, error, empty, and success states.
 
 ## 8. Open decisions before financial release
 
@@ -190,4 +190,4 @@ The client retains draft form state and picker selection locally until submit. T
 6. **Reporting:** whether revenue means invoiced revenue or cash collected, and how to display or aggregate multiple currencies.
 7. **Quotation without template:** default validity days and whether a quote can be confirmed after expiry.
 
-When these choices are made, update this contract, the billing tests, and any affected approved mockup state together before implementation.
+When these choices are made, update this contract, the billing tests, and any affected frontend state together before implementation.

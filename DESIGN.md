@@ -33,9 +33,9 @@ components:
 
 # Brightloop Design System
 
-## Approved implementation baseline
+## Application direction
 
-The current `wireframes/` mockup is the approved UI baseline for the real product. Preserve its rendered layout, fonts, colors, spacing, component shapes, motion, navigation order, and visible text at matching viewport sizes and states. Do not add helper copy, subtext, or other visible content to implemented screens without an approved mockup change. `docs/MOCKUP_BASELINE.sha256` records the reviewed source files. Runtime data replaces illustrative values inside the same UI slots. Compare rendered screens and visible text with the mockup before accepting implementation work.
+Use the Porcelain · Graphite system for the application. Keep layouts, interactions, and text consistent across frontend screens; review desktop and mobile states before accepting changes.
 
 ## Direction
 
@@ -47,7 +47,7 @@ The desktop shell has a collapsible 232 px navigation rail and a flexible conten
 
 ## Components and motion
 
-Cards, tables, fields, buttons, and dialogs use the tokens above. `wireframes/styles.css` is the runtime token source; update that file and this document together. Section headings and destinations share a minimal outline icon family. The home screen uses one shared metric strip, one chart, and a short work queue. Compact staff, tax, and payment forms use rectangular overlays above their owning list. Subscription actions, invoice actions, and customer self service use one rectangular review dialog. The catalog picker is shared by subscriptions, quote templates, and product-scoped discounts. Surfaces use subtle borders and spacing instead of stacked shadows. Status uses a label and dot, never color alone. Motion signals route changes and chart updates: 130 ms exit, 360 ms entrance, 700 ms bar growth, and a 1150 ms chart line draw. Reduced motion preserves final values without travel or drawing.
+Cards, tables, fields, buttons, and dialogs use the tokens above. `frontend/src/style.css` is the runtime token source; update that file and this document together. Section headings and destinations share a minimal outline icon family. The home screen uses one shared metric strip, one chart, and a short work queue. Compact staff, tax, and payment forms use rectangular overlays above their owning list. Subscription actions, invoice actions, and customer self service use one rectangular review dialog. The catalog picker is shared by subscriptions, quote templates, and product-scoped discounts. Surfaces use subtle borders and spacing instead of stacked shadows. Status uses a label and dot, never color alone. Motion signals route changes and chart updates: 130 ms exit, 360 ms entrance, 700 ms bar growth, and a 1150 ms chart line draw. Reduced motion preserves final values without travel or drawing.
 
 ## Restraint
 
@@ -55,4 +55,4 @@ Use one chart per overview, with a nearby data table in reports. Keep invoice to
 
 ## Accent study
 
-`docs/design-preview/index.html` compares three accents on the same Porcelain base and Brightloop layouts: Copper `#A34F2D`, Mulberry `#8B3E58`, and Graphite `#49514D`. Graphite is applied to `wireframes/index.html` across navigation, actions, charts, and invoice states.
+Graphite `#49514D` is the selected accent for navigation, actions, charts, and invoice states.
