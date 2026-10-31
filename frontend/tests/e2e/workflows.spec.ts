@@ -363,3 +363,41 @@ test('failed saves keep the entered values available for retry', async ({ page, 
   await save(page, name);
   expect(attempts).toBe(2);
 });
+
+test('seeded lists and every report view show populated history charts', async ({ page }) => {
+  await login(page);
+  const dashboard = main(page).getByRole('img', { name: 'Collections over six months · USD' });
+  await expect(dashboard.locator('circle')).toHaveCount(6);
+  await expect(main(page).locator('tbody tr')).toHaveCount(8);
+  await nav(page, 'Products');
+  await expect(main(page).locator('tbody tr')).toHaveCount(25);
+  await nav(page, 'Customers');
+  await expect(main(page).locator('tbody tr')).toHaveCount(25);
+  await nav(page, 'Reports');
+  for (const [button, title] of [
+    ['Collections', 'Collected'],
+    ['Outstanding', 'Outstanding'],
+    ['Overdue invoices', 'Overdue invoices'],
+  ]) {
+    await main(page).getByRole('button', { name: button, exact: true }).click();
+    const chart = main(page).getByRole('img', { name: `${title} over time · USD` });
+    await expect(chart.locator('circle')).toHaveCount(6);
+    expect(await chart.locator('.chart-line').getAttribute('d')).not.toMatch(/NaN|Infinity/);
+  }
+  await main(page).getByLabel('Currency', { exact: true }).selectOption('INR');
+  await expect(
+    main(page).getByRole('img', { name: 'Overdue invoices over time · INR' }),
+  ).toBeVisible();
+  await main(page).getByLabel('From', { exact: true }).fill('2024-01-01');
+  await main(page).getByLabel('To', { exact: true }).fill('2024-01-31');
+  await expect(
+    main(page).getByText('No report data in this date range. Choose a different range.'),
+  ).toBeVisible();
+
+  await page.evaluate(() => localStorage.clear());
+  await login(page, 'customer@brightloop.demo', 'DemoCustomer!1');
+  await expect(
+    main(page).getByRole('img', { name: 'Invoice totals over six months · USD' }).locator('circle'),
+  ).toHaveCount(6);
+  await expect(main(page).locator('tbody tr')).toHaveCount(8);
+});
