@@ -40,6 +40,7 @@ from .schemas import (
     SCHEMAS,
     parse_record,
 )
+from .currencies import CURRENCY_DIGITS
 
 
 @asynccontextmanager
@@ -469,14 +470,32 @@ def health():
 
 
 def people_page(session, role, search, limit, cursor, active=None):
-    query = select(User).where(User.role == role, User.id > cursor).order_by(User.id)
+    roles = (role,) if isinstance(role, str) else role
+    query = select(User).where(User.role.in_(roles), User.id > cursor).order_by(User.id)
     if search:
         query = query.where(or_(User.name.ilike(f"%{search}%"), User.email.ilike(f"%{search}%")))
     if active is not None:
         query = query.where(User.active == active)
     rows = list(session.scalars(query.limit(limit + 1)))
+    counts = {}
+    if role == "customer" and rows:
+        counts = dict(
+            session.execute(
+                select(Record.owner_id, func.count())
+                .where(
+                    Record.kind == "subscriptions",
+                    Record.status == "active",
+                    Record.owner_id.in_([row.id for row in rows[:limit]]),
+                )
+                .group_by(Record.owner_id)
+            ).all()
+        )
     return {
-        "data": [public_user(row) for row in rows[:limit]],
+        "data": [
+            public_user(row)
+            | ({"active_subscription_count": counts.get(row.id, 0)} if role == "customer" else {})
+            for row in rows[:limit]
+        ],
         "next_cursor": rows[limit - 1].id if len(rows) > limit else None,
     }
 
@@ -491,7 +510,7 @@ def staff(
     session: DbSession = Depends(db),
 ):
     allowed(user, "admin")
-    return people_page(session, "staff", search, limit, cursor, active)
+    return people_page(session, ("admin", "staff"), search, limit, cursor, active)
 
 
 @app.post("/api/v1/staff", status_code=201)
@@ -520,7 +539,7 @@ def add_staff(body: Credentials, user: User = Depends(current), session: DbSessi
 def staff_detail(staff_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
     allowed(user, "admin")
     member = session.get(User, staff_id)
-    if not member or member.role != "staff":
+    if not member or member.role not in {"admin", "staff"}:
         fail("not_found", 404)
     return public_user(member)
 
@@ -587,18 +606,27 @@ def customer_detail(
 
 @app.get("/api/v1/catalog-items")
 def catalog_items(
-    search: str = "", user: User = Depends(current), session: DbSession = Depends(db)
+    search: str = "",
+    currency: str = "",
+    base_only: bool = False,
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
 ):
     allowed(user, "admin", "staff", "customer")
+    currency = currency.upper()
+    if currency and currency not in CURRENCY_DIGITS:
+        fail("unsupported_currency")
     rows = []
     for product in session.scalars(
         select(Record).where(Record.kind == "products", Record.status == "active")
     ):
         data = product.payload
+        if currency and data.get("currency", "USD") != currency:
+            continue
         if user.role == "customer" and data.get("type") != "add_on":
             continue
-        currency = data.get("currency", "USD")
-        base = money(data.get("sales_price", "0"), currency)
+        product_currency = data.get("currency", "USD")
+        base = money(data.get("sales_price", "0"), product_currency)
         rows.append(
             {
                 "product_id": product.id,
@@ -606,10 +634,10 @@ def catalog_items(
                 "name": data.get("name", ""),
                 "sku": data.get("sku", ""),
                 "unit_price": str(base),
-                "currency": currency,
+                "currency": product_currency,
             }
         )
-        for index, variant in enumerate(data.get("variants", [])):
+        for index, variant in enumerate([] if base_only else data.get("variants", [])):
             if variant.get("active", True):
                 rows.append(
                     {
@@ -619,12 +647,20 @@ def catalog_items(
                         "variant_name": variant.get("name", ""),
                         "sku": variant.get("sku", ""),
                         "unit_price": str(
-                            base + money(variant.get("price_adjustment", "0"), currency)
+                            base + money(variant.get("price_adjustment", "0"), product_currency)
                         ),
-                        "currency": currency,
+                        "currency": product_currency,
                     }
                 )
-    return {"data": [row for row in rows if search.lower() in str(row).lower()][:100]}
+    query = search.casefold()
+    return {
+        "data": [
+            row
+            for row in rows
+            if query
+            in " ".join(str(row.get(key, "")) for key in ["name", "sku", "variant_name"]).casefold()
+        ][:100]
+    }
 
 
 def resolve_lines(session, selections, currency):
@@ -1383,6 +1419,7 @@ def list_records(
     status: str = "",
     limit: int = Query(25, ge=1, le=100),
     cursor: int = Query(0, ge=0),
+    sort: str = "oldest",
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
@@ -1390,12 +1427,16 @@ def list_records(
         fail("not_found", 404)
     if user.role == "customer" and kind not in {"subscriptions", "requests"}:
         fail("forbidden", 403)
+    if sort not in {"oldest", "newest"}:
+        fail("invalid_sort")
     query = (
         select(Record)
-        .where(Record.kind == kind, Record.id > cursor)
-        .order_by(Record.id)
+        .where(Record.kind == kind)
+        .order_by(Record.id.desc() if sort == "newest" else Record.id)
         .limit(min(max(limit, 1), 100) + 1)
     )
+    if cursor:
+        query = query.where(Record.id < cursor if sort == "newest" else Record.id > cursor)
     if user.role == "customer":
         query = query.where(Record.owner_id == user.id)
     if status:
@@ -1489,7 +1530,30 @@ def read_record(
         fail("not_found", 404)
     if user.role == "customer" and kind not in {"subscriptions", "requests"}:
         fail("forbidden", 403)
-    return record_view(session, get_record(session, kind, record_id, user), user)
+    result = record_view(session, get_record(session, kind, record_id, user), user)
+    if kind == "subscriptions":
+        discounts = [
+            row.payload | {"id": row.id}
+            for row in session.scalars(select(Record).where(Record.kind == "discount-rules"))
+        ]
+        taxes = [
+            row.payload for row in session.scalars(select(Record).where(Record.kind == "tax-rules"))
+        ]
+        estimate = invoice_amount(
+            result["plan"],
+            result["lines"],
+            discounts,
+            taxes,
+            date.fromisoformat(result.get("next_billing_date", result["start_date"])),
+            {"country": result.get("billing_country"), "region": result.get("billing_region")},
+        )
+        return {
+            **result,
+            "lines": estimate["lines"],
+            "estimate": estimate,
+            "currency": estimate["currency"],
+        }
+    return result
 
 
 @app.patch("/api/v1/{kind}/{record_id}")
@@ -1600,8 +1664,9 @@ def subscription_history(
     record_id: int, user: User = Depends(current), session: DbSession = Depends(db)
 ):
     get_record(session, "subscriptions", record_id, user)
-    rows = session.scalars(
-        select(Event)
+    rows = session.execute(
+        select(Event, User.name)
+        .outerjoin(User, User.id == Event.actor_id)
         .where(Event.kind == "subscriptions", Event.record_id == record_id)
         .order_by(Event.id)
     )
@@ -1610,9 +1675,10 @@ def subscription_history(
             {
                 "action": row.action,
                 "actor_id": row.actor_id,
+                "actor_name": name,
                 "created_at": row.created_at.isoformat(),
             }
-            for row in rows
+            for row, name in rows
         ]
     }
 

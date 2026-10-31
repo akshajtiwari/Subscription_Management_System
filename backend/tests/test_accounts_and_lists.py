@@ -99,3 +99,76 @@ def test_variant_indexes_are_preserved_by_deactivation(api):
     )
     assert result.status_code == 200
     assert len(client.get("/api/v1/catalog-items", headers=headers["admin"]).json()["data"]) == 1
+
+
+def test_newest_first_pagination_has_no_overlapping_records(api):
+    client, headers, sessions = api
+    with sessions() as session:
+        session.add_all(
+            [
+                Record(
+                    kind="products",
+                    number=f"NEWEST-{index}",
+                    status="active",
+                    payload={"name": f"Product {index}", "sales_price": "1.00", "currency": "USD"},
+                )
+                for index in range(6)
+            ]
+        )
+        session.commit()
+    newest = client.get("/api/v1/products?limit=2&sort=newest", headers=headers["admin"]).json()
+    older = client.get(
+        f"/api/v1/products?limit=2&sort=newest&cursor={newest['next_cursor']}",
+        headers=headers["admin"],
+    ).json()
+    assert min(row["id"] for row in newest["data"]) > max(row["id"] for row in older["data"])
+
+
+def test_catalog_currency_and_variant_filters_run_before_the_result_limit(api):
+    client, headers, sessions = api
+    with sessions() as session:
+        session.add_all(
+            [
+                Record(
+                    kind="products",
+                    number=f"USD-{index}",
+                    status="active",
+                    payload={"name": f"Product {index}", "sales_price": "1.00", "currency": "USD"},
+                )
+                for index in range(105)
+            ]
+        )
+        session.add(
+            Record(
+                kind="products",
+                number="EUR-ONLY",
+                status="active",
+                payload={
+                    "name": "European product",
+                    "sales_price": "10.00",
+                    "currency": "EUR",
+                    "variants": [{"name": "Large", "price_adjustment": "2.00"}],
+                },
+            )
+        )
+        session.commit()
+    rows = client.get(
+        "/api/v1/catalog-items?currency=EUR&base_only=true", headers=headers["staff"]
+    ).json()["data"]
+    assert len(rows) == 1
+    assert rows[0]["name"] == "European product"
+    assert rows[0]["variant_id"] is None
+
+
+def test_internal_directory_includes_admins_but_only_staff_accounts_can_be_changed(api):
+    client, headers, _ = api
+    members = client.get("/api/v1/staff", headers=headers["admin"]).json()["data"]
+    assert {member["role"] for member in members} == {"admin", "staff"}
+    assert client.get("/api/v1/staff/1", headers=headers["admin"]).json()["role"] == "admin"
+    assert (
+        client.patch(
+            "/api/v1/staff/1", headers=headers["admin"], json={"active": False}
+        ).status_code
+        == 404
+    )
+    assert client.get("/api/v1/staff", headers=headers["customer"]).status_code == 403
