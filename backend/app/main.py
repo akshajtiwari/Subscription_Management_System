@@ -1065,12 +1065,16 @@ def invoices(
     overdue: bool = False,
     start: str = "",
     end: str = "",
+    subscription_id: int | None = None,
     limit: int = Query(25, ge=1, le=100),
     cursor: int = Query(0, ge=0),
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
     query = select(Invoice).join(User, User.id == Invoice.customer_id).order_by(Invoice.id.desc())
+    if subscription_id is not None:
+        get_record(session, "subscriptions", subscription_id, user)
+        query = query.where(Invoice.subscription_id == subscription_id)
     if cursor:
         query = query.where(Invoice.id < cursor)
     if user.role == "customer":
