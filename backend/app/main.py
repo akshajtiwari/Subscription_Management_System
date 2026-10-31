@@ -31,6 +31,10 @@ class Credentials(BaseModel):
     name: str = ""
 
 
+class ResetRequest(BaseModel):
+    email: str
+
+
 class Payload(BaseModel):
     payload: dict = Field(default_factory=dict)
 
@@ -132,7 +136,7 @@ def login(body: Credentials, session: DbSession = Depends(db)):
 
 
 @app.post("/api/v1/auth/password-resets", status_code=202)
-def reset_request(body: Credentials, session: DbSession = Depends(db)):
+def reset_request(body: ResetRequest, session: DbSession = Depends(db)):
     user = session.scalar(select(User).where(User.email == body.email.strip().lower()))
     if user:
         reset_token = secrets.token_urlsafe(30)
@@ -191,6 +195,62 @@ def add_staff(body: Credentials, user: User = Depends(current), session: DbSessi
 def customers(user: User = Depends(current), session: DbSession = Depends(db)):
     allowed(user, "admin", "staff")
     return {"data": [public_user(x) for x in session.scalars(select(User).where(User.role == "customer"))]}
+
+
+@app.get("/api/v1/catalog-items")
+def catalog_items(search: str = "", user: User = Depends(current), session: DbSession = Depends(db)):
+    allowed(user, "admin", "staff")
+    rows = []
+    for product in session.scalars(select(Record).where(Record.kind == "products", Record.status == "active")):
+        data = product.payload
+        currency = data.get("currency", "USD")
+        base = money(data.get("sales_price", "0"))
+        rows.append({"product_id": product.id, "variant_id": None, "name": data.get("name", ""), "sku": data.get("sku", ""), "unit_price": str(base), "currency": currency})
+        for index, variant in enumerate(data.get("variants", [])):
+            if variant.get("active", True):
+                rows.append({"product_id": product.id, "variant_id": index, "name": data.get("name", ""), "variant_name": variant.get("name", ""), "sku": variant.get("sku", ""), "unit_price": str(base + money(variant.get("price_adjustment", "0"))), "currency": currency})
+    return {"data": [row for row in rows if search.lower() in str(row).lower()][:100]}
+
+
+def resolved_subscription(session, payload):
+    customer = session.get(User, payload.get("customer_id"))
+    plan = session.get(Record, payload.get("plan_id"))
+    if not customer or customer.role != "customer" or not plan or plan.kind != "plans" or plan.status != "active":
+        fail("missing_subscription_fields")
+    if not payload.get("lines") or date.fromisoformat(payload["start_date"]) > date.fromisoformat(payload["expiry_date"]):
+        fail("invalid_subscription_dates")
+    if int(payload.get("payment_terms_days", 0)) < 0:
+        fail("invalid_payment_terms")
+    currency = plan.payload.get("currency", "USD")
+    lines = []
+    quantity_total = 0
+    for line in payload["lines"]:
+        product = session.get(Record, line.get("product_id"))
+        if not product or product.kind != "products" or product.status != "active" or product.payload.get("currency", "USD") != currency:
+            fail("catalog_item_unavailable")
+        try:
+            quantity = int(line["quantity"])
+        except (KeyError, TypeError, ValueError):
+            fail("invalid_quantity")
+        if quantity <= 0:
+            fail("invalid_quantity")
+        quantity_total += quantity
+        variant_id = line.get("variant_id")
+        variant = None
+        if variant_id is not None:
+            try:
+                variant = product.payload.get("variants", [])[int(variant_id)]
+            except (ValueError, IndexError, TypeError):
+                fail("catalog_item_unavailable")
+            if not variant.get("active", True):
+                fail("catalog_item_unavailable")
+        price = money(product.payload.get("sales_price", 0)) + money(variant.get("price_adjustment", 0) if variant else 0)
+        if price < 0:
+            fail("invalid_price")
+        lines.append({"product_id": product.id, "variant_id": variant_id, "name": product.payload.get("name", ""), "variant_name": variant.get("name") if variant else None, "quantity": quantity, "unit_price": str(price), "currency": currency})
+    if quantity_total < int(plan.payload.get("minimum_quantity", 1)):
+        fail("minimum_quantity")
+    return {**payload, "lines": lines, "currency": currency, "next_billing_date": payload["start_date"]}
 
 
 def invoice_json(invoice, session):
@@ -253,6 +313,18 @@ def invoices(user: User = Depends(current), session: DbSession = Depends(db)):
     if user.role == "customer":
         query = query.where(Invoice.customer_id == user.id)
     return {"data": [invoice_json(x, session) for x in session.scalars(query)]}
+
+
+@app.get("/api/v1/me/invoices")
+def my_invoices(user: User = Depends(current), session: DbSession = Depends(db)):
+    allowed(user, "customer")
+    return invoices(user, session)
+
+
+@app.get("/api/v1/me/invoices/{invoice_id}")
+def my_invoice(invoice_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
+    allowed(user, "customer")
+    return invoice_json(get_invoice(session, invoice_id, user), session)
 
 
 @app.get("/api/v1/invoices/{invoice_id}")
@@ -345,15 +417,28 @@ def list_records(kind: str, search: str = "", status: str = "", limit: int = 25,
     return {"data": [record_json(x) for x in records[:limit]], "next_cursor": records[limit - 1].id if len(records) > limit else None}
 
 
+@app.get("/api/v1/me/subscriptions")
+def my_subscriptions(user: User = Depends(current), session: DbSession = Depends(db)):
+    allowed(user, "customer")
+    return {"data": [record_json(x) for x in session.scalars(select(Record).where(Record.kind == "subscriptions", Record.owner_id == user.id))]}
+
+
+@app.get("/api/v1/me/subscriptions/{record_id}")
+def my_subscription(record_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
+    allowed(user, "customer")
+    return record_json(get_record(session, "subscriptions", record_id, user))
+
+
 @app.post("/api/v1/{kind}", status_code=201)
 def create_record(kind: str, body: Payload, user: User = Depends(current), session: DbSession = Depends(db)):
     if kind not in KINDS:
         fail("not_found", 404)
+    if kind == "requests":
+        fail("forbidden", 403)
     allowed(user, "admin" if kind in ADMIN_ONLY else "admin", *([] if kind in ADMIN_ONLY else ["staff"]))
     payload = body.payload.copy()
     if kind == "subscriptions":
-        if not session.get(User, payload.get("customer_id")) or not payload.get("plan_id") or not payload.get("lines"):
-            fail("missing_subscription_fields")
+        payload = resolved_subscription(session, payload)
         owner_id = payload["customer_id"]
         status = "draft"
     else:
@@ -383,7 +468,8 @@ def update_record(kind: str, record_id: int, body: Payload, if_match: str | None
     check_version(record.version, if_match)
     if kind == "subscriptions" and record.status != "draft":
         fail("invalid_transition", 409)
-    record.payload = {**record.payload, **body.payload}
+    merged = {**record.payload, **body.payload}
+    record.payload = resolved_subscription(session, merged) if kind == "subscriptions" else merged
     record.version += 1
     event(session, kind, record.id, "updated", user.id)
     session.commit()
