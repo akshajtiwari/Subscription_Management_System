@@ -1,5 +1,4 @@
 dist/
-wireframes/.browser-smoke.html
 *.core
 backend/.venv/
 backend/*.db
