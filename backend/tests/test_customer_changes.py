@@ -198,3 +198,20 @@ def test_renewal_extends_original_term_instead_of_one_billing_interval():
         "term_days": 28,
     }
     assert renewal_date(payload) == date(2026, 3, 31)
+
+
+def test_staff_can_reject_a_scheduled_change_before_it_is_applied(api):
+    client, headers, _ = api
+    row, _, _ = subscription(api)
+    change = client.post(
+        f"/api/v1/me/subscriptions/{row['id']}/requests",
+        json={"action": "pause"},
+        headers=headers["customer"],
+    ).json()
+    path = f"/api/v1/requests/{change['id']}"
+    assert client.post(path + "/approve", headers=headers["staff"]).status_code == 200
+    assert client.post(path + "/reject", headers=headers["staff"]).status_code == 200
+    assert client.get(f"/api/v1/subscriptions/{row['id']}", headers=headers["customer"]).json()[
+        "available_actions"
+    ]
+    assert run_billing(api)["created_count"] == 1

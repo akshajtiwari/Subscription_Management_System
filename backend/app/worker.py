@@ -12,11 +12,11 @@ from .main import billing_run
 
 def run_once():
     init_db()
-    today = datetime.now(timezone.utc).date().isoformat()
+    slot = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
     with Session() as session:
         admin = session.scalar(select(User).where(User.role == "admin"))
         if admin:
-            return billing_run({"due_on": today}, f"scheduled-{today}", admin, session)
+            return billing_run({}, f"scheduled-{slot}", admin, session)
     return None
 
 

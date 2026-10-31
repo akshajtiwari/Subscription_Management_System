@@ -235,3 +235,8 @@ class StaffUpdate(Input):
 
 class AccountUpdate(Input):
     name: str = Field(min_length=1, max_length=160)
+
+
+class BillingInput(Input):
+    due_on: date | None = None
+    subscription_ids: list[PositiveId] = Field(default_factory=list, max_length=1000)

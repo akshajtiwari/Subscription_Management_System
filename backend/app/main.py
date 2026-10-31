@@ -31,7 +31,15 @@ from .rules import (
 )
 from .pdf import invoice_pdf
 from .reporting import report_snapshot
-from .schemas import AccountUpdate, StaffUpdate, CustomerChange, PaymentInput, SCHEMAS, parse_record
+from .schemas import (
+    BillingInput,
+    AccountUpdate,
+    StaffUpdate,
+    CustomerChange,
+    PaymentInput,
+    SCHEMAS,
+    parse_record,
+)
 
 
 @asynccontextmanager
@@ -713,7 +721,7 @@ def invoice_json(invoice, session):
     )
     customer = session.get(User, invoice.customer_id)
     actions = (
-        ["confirm", "cancel"]
+        ["recalculate", "confirm", "cancel"]
         if invoice.status == "draft"
         else (["send"] + (["cancel"] if not payments else []))
         if invoice.status == "confirmed"
@@ -768,7 +776,7 @@ def get_invoice(session, invoice_id, user, lock=False):
 @app.post("/api/v1/billing-runs", status_code=202)
 def billing_run(
     body: dict,
-    idempotency_key: str = Header(...),
+    idempotency_key: str = Header(..., min_length=1, max_length=100),
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
@@ -780,12 +788,19 @@ def billing_run(
         if previous.action != fingerprint:
             fail("idempotency_conflict", 409)
         return previous.result
-    due_on = date.fromisoformat(body["due_on"])
+    inputs = BillingInput.model_validate(body)
+    due_on = inputs.due_on or datetime.now(timezone.utc).date()
+    run_date = due_on
+    subscriptions_query = select(Record).where(Record.kind == "subscriptions")
+    if inputs.subscription_ids:
+        subscriptions_query = subscriptions_query.where(Record.id.in_(inputs.subscription_ids))
     counts = {"created_count": 0, "skipped_count": 0, "failed_count": 0, "failures": []}
     failed_subscriptions = set()
-    for subscription in session.scalars(
-        select(Record).where(Record.kind == "subscriptions").with_for_update()
-    ):
+    for subscription in session.scalars(subscriptions_query.with_for_update()):
+        due_on = (
+            inputs.due_on
+            or datetime.now(ZoneInfo(subscription.payload.get("billing_timezone", "UTC"))).date()
+        )
         plan = session.get(Record, subscription.payload["plan_id"])
         if (
             subscription.status == "confirmed"
@@ -852,17 +867,19 @@ def billing_run(
             event(session, "subscriptions", subscription.id, f"approved_{action}")
             if subscription.status != "active":
                 counts["skipped_count"] += 1
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, HTTPException) as exc:
             failed_subscriptions.add(subscription.id)
             counts["failed_count"] += 1
             counts["failures"].append(
                 {"subscription_id": subscription.id, "reason": f"approved_change: {exc}"}
             )
     for subscription in session.scalars(
-        select(Record)
-        .where(Record.kind == "subscriptions", Record.status == "active")
-        .with_for_update()
+        subscriptions_query.where(Record.status == "active").with_for_update()
     ):
+        due_on = (
+            inputs.due_on
+            or datetime.now(ZoneInfo(subscription.payload.get("billing_timezone", "UTC"))).date()
+        )
         if subscription.id in failed_subscriptions:
             continue
         try:
@@ -945,6 +962,8 @@ def billing_run(
                     "customer": {"id": customer.id, "name": customer.name, "email": customer.email},
                     "plan_name": plan.get("name", "Plan"),
                     "billing_timezone": subscription.payload.get("billing_timezone", "UTC"),
+                    "billing_country": subscription.payload.get("billing_country", ""),
+                    "billing_region": subscription.payload.get("billing_region", ""),
                 }
                 invoice = Invoice(
                     number=f"INV-{secrets.token_hex(5).upper()}",
@@ -973,14 +992,14 @@ def billing_run(
                 counts["failures"].append(
                     {"subscription_id": subscription.id, "reason": "too_many_periods"}
                 )
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, HTTPException) as exc:
             counts["failed_count"] += 1
             counts["failures"].append({"subscription_id": subscription.id, "reason": str(exc)})
     run = Record(
         kind="billing-runs",
         number=f"RUN-{secrets.token_hex(4).upper()}",
-        status="complete",
-        payload={"due_on": due_on.isoformat(), **counts},
+        status="complete" if counts["failed_count"] == 0 else "complete_with_errors",
+        payload={"due_on": run_date.isoformat(), **counts},
     )
     session.add(run)
     session.flush()
@@ -1072,7 +1091,7 @@ def download_invoice(
 def add_payment(
     invoice_id: int,
     body: dict,
-    idempotency_key: str = Header(...),
+    idempotency_key: str = Header(..., min_length=1, max_length=100),
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
@@ -1120,60 +1139,146 @@ def invoice_action(
     invoice_id: int,
     action: str,
     if_match: str | None = Header(None),
+    idempotency_key: str | None = Header(None, max_length=100),
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
     allowed(user, "admin", "staff")
+    key = f"invoice:{invoice_id}:{action}:{user.id}:{idempotency_key}" if idempotency_key else None
+    fingerprint = payload_fingerprint("invoice_action", {"action": action, "version": if_match})
+    previous = session.get(Idempotency, key) if key else None
+    if previous:
+        if previous.action != fingerprint:
+            fail("idempotency_conflict", 409)
+        return previous.result
     invoice = get_invoice(session, invoice_id, user, lock=True)
     check_version(invoice.version, if_match)
-    if action == "confirm" and invoice.status == "draft":
+    if action == "recalculate" and invoice.status == "draft":
+        discounts = [
+            {**record.payload, "id": record.id}
+            for record in session.scalars(
+                select(Record).where(Record.kind == "discount-rules").with_for_update()
+            )
+        ]
+        taxes = [
+            record.payload
+            for record in session.scalars(select(Record).where(Record.kind == "tax-rules"))
+        ]
+        snapshot = invoice.snapshot
+        computed = invoice_amount(
+            {
+                "name": snapshot.get("plan_name", "Plan"),
+                "price": snapshot["plan_fee"],
+                "currency": snapshot["currency"],
+            },
+            snapshot["lines"],
+            discounts,
+            taxes,
+            date.fromisoformat(invoice.period_start),
+            {"country": snapshot.get("billing_country"), "region": snapshot.get("billing_region")},
+        )
+        invoice.snapshot = {**snapshot, **computed}
+    elif action == "confirm" and invoice.status == "draft":
         rule_id = invoice.snapshot.get("discount_rule_id")
         if rule_id:
             rule = get_record(session, "discount-rules", rule_id, user, lock=True)
             used = int(rule.payload.get("usage_count", 0))
-            limit = rule.payload.get("usage_limit")
-            if limit is not None and used >= int(limit):
+            if rule.payload.get("usage_limit") is not None and used >= int(
+                rule.payload["usage_limit"]
+            ):
                 fail("discount_exhausted", 409)
             rule.payload = {**rule.payload, "usage_count": used + 1}
-        invoice.status = "confirmed"
+            rule.version += 1
+        invoice.status = (
+            "paid"
+            if money(invoice.snapshot["total"], invoice.snapshot["currency"]) == 0
+            else "confirmed"
+        )
     elif (
         action == "cancel"
         and invoice.status in {"draft", "confirmed"}
         and not invoice_json(invoice, session)["payments"]
     ):
         if invoice.status == "confirmed" and invoice.snapshot.get("discount_rule_id"):
-            rule = get_record(session, "discount-rules", invoice.snapshot["discount_rule_id"], user)
+            rule = get_record(
+                session, "discount-rules", invoice.snapshot["discount_rule_id"], user, lock=True
+            )
             rule.payload = {
                 **rule.payload,
                 "usage_count": max(0, int(rule.payload.get("usage_count", 0)) - 1),
             }
+            rule.version += 1
         invoice.status = "canceled"
-    elif action == "send" and invoice.status == "confirmed":
-        event(session, "outbox", invoice.id, "invoice_send", user.id)
+    elif action == "send" and invoice.status in {"confirmed", "paid"}:
+        event(
+            session,
+            "outbox",
+            invoice.id,
+            "invoice_send",
+            user.id,
+            detail={"invoice_number": invoice.number},
+        )
     else:
         fail("invalid_transition", 409)
     invoice.version += 1
     event(session, "invoices", invoice.id, action, user.id)
+    session.flush()
+    result = invoice_json(invoice, session)
+    if key:
+        session.add(Idempotency(key=key, action=fingerprint, result=result))
     session.commit()
-    return invoice_json(invoice, session)
+    return result
+
+
+def payment_view(payment, session):
+    invoice = session.get(Invoice, payment.invoice_id)
+    return {
+        "id": payment.id,
+        "invoice_id": payment.invoice_id,
+        "invoice_number": invoice.number,
+        "amount": payment.amount,
+        "currency": payment.currency,
+        "method": payment.method,
+        "paid_at": payment.paid_at,
+        "note": payment.note,
+    }
 
 
 @app.get("/api/v1/payments")
-def payments(user: User = Depends(current), session: DbSession = Depends(db)):
+def payments(
+    search: str = "",
+    limit: int = Query(25, ge=1, le=100),
+    cursor: int = Query(0, ge=0),
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
+):
     allowed(user, "admin", "staff")
+    query = (
+        select(Payment)
+        .join(Invoice, Invoice.id == Payment.invoice_id)
+        .where(Payment.id > cursor)
+        .order_by(Payment.id)
+    )
+    if search:
+        query = query.where(
+            or_(Invoice.number.ilike(f"%{search}%"), Payment.method.ilike(f"%{search}%"))
+        )
+    rows = list(session.scalars(query.limit(limit + 1)))
     return {
-        "data": [
-            {
-                "id": p.id,
-                "invoice_id": p.invoice_id,
-                "amount": p.amount,
-                "currency": p.currency,
-                "method": p.method,
-                "paid_at": p.paid_at,
-            }
-            for p in session.scalars(select(Payment).order_by(Payment.id.desc()).limit(100))
-        ]
+        "data": [payment_view(row, session) for row in rows[:limit]],
+        "next_cursor": rows[limit - 1].id if len(rows) > limit else None,
     }
+
+
+@app.get("/api/v1/payments/{payment_id}")
+def payment_detail(
+    payment_id: int, user: User = Depends(current), session: DbSession = Depends(db)
+):
+    allowed(user, "admin", "staff")
+    payment = session.get(Payment, payment_id)
+    if not payment:
+        fail("not_found", 404)
+    return payment_view(payment, session)
 
 
 def report_result(session, start, end):
@@ -1479,7 +1584,11 @@ def decide_request(
 ):
     allowed(user, "admin", "staff")
     request = get_record(session, "requests", record_id, user, lock=True)
-    if request.status != "pending" or decision not in {"approve", "reject"}:
+    if (
+        decision not in {"approve", "reject"}
+        or request.status != "pending"
+        and not (decision == "reject" and request.status == "approved")
+    ):
         fail("invalid_transition", 409)
     if decision == "approve":
         subscription = get_record(
@@ -1498,6 +1607,15 @@ def decide_request(
             "pending_change": {**request.payload, "request_id": request.id},
         }
         subscription.version += 1
+    elif request.status == "approved":
+        subscription = get_record(
+            session, "subscriptions", request.payload["subscription_id"], user, lock=True
+        )
+        if subscription.payload.get("pending_change", {}).get("request_id") == request.id:
+            subscription.payload = {
+                key: value for key, value in subscription.payload.items() if key != "pending_change"
+            }
+            subscription.version += 1
     request.status = "approved" if decision == "approve" else "rejected"
     request.version += 1
     event(session, "requests", request.id, decision, user.id)
