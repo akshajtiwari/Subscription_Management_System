@@ -469,9 +469,17 @@ def health():
     return {"status": "ok", "demo": True}
 
 
-def people_page(session, role, search, limit, cursor, active=None):
+def people_page(session, role, search, limit, cursor, active=None, sort="oldest"):
+    if sort not in {"oldest", "newest"}:
+        fail("invalid_sort")
     roles = (role,) if isinstance(role, str) else role
-    query = select(User).where(User.role.in_(roles), User.id > cursor).order_by(User.id)
+    query = (
+        select(User)
+        .where(User.role.in_(roles))
+        .order_by(User.id.desc() if sort == "newest" else User.id)
+    )
+    if cursor:
+        query = query.where(User.id < cursor if sort == "newest" else User.id > cursor)
     if search:
         query = query.where(or_(User.name.ilike(f"%{search}%"), User.email.ilike(f"%{search}%")))
     if active is not None:
@@ -506,11 +514,12 @@ def staff(
     limit: int = Query(25, ge=1, le=100),
     cursor: int = Query(0, ge=0),
     active: bool | None = None,
+    sort: str = "oldest",
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
     allowed(user, "admin")
-    return people_page(session, ("admin", "staff"), search, limit, cursor, active)
+    return people_page(session, ("admin", "staff"), search, limit, cursor, active, sort)
 
 
 @app.post("/api/v1/staff", status_code=201)
@@ -566,11 +575,12 @@ def customers(
     search: str = "",
     limit: int = Query(25, ge=1, le=100),
     cursor: int = Query(0, ge=0),
+    sort: str = "oldest",
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
     allowed(user, "admin", "staff")
-    return people_page(session, "customer", search, limit, cursor)
+    return people_page(session, "customer", search, limit, cursor, sort=sort)
 
 
 @app.get("/api/v1/customers/{customer_id}")

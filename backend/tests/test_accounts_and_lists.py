@@ -1,4 +1,4 @@
-from app.db import Record
+from app.db import Record, User
 
 
 def test_search_applies_before_pagination(api):
@@ -29,6 +29,38 @@ def test_search_applies_before_pagination(api):
     ).json()
     assert not {row["id"] for row in first["data"]} & {row["id"] for row in second["data"]}
     assert client.get("/api/v1/products?limit=0", headers=headers["admin"]).status_code == 422
+
+
+def test_newest_people_pages_include_new_accounts_without_overlapping_pages(api):
+    client, headers, sessions = api
+    with sessions() as session:
+        password_hash = session.get(User, 1).password_hash
+        for role in ["staff", "customer"]:
+            for index in range(30):
+                session.add(
+                    User(
+                        name=f"New {role} {index:02d}",
+                        role=role,
+                        email=f"{role}-{index}@example.test",
+                        password_hash=password_hash,
+                    )
+                )
+        session.commit()
+    for resource in ["staff", "customers"]:
+        first = client.get(f"/api/v1/{resource}?sort=newest&limit=25", headers=headers["admin"])
+        assert first.status_code == 200
+        first = first.json()
+        assert first["data"][0]["name"].endswith("29")
+        second = client.get(
+            f"/api/v1/{resource}?sort=newest&limit=25&cursor={first['next_cursor']}",
+            headers=headers["admin"],
+        ).json()
+        assert not {row["id"] for row in first["data"]} & {row["id"] for row in second["data"]}
+        assert len(first["data"]) + len(second["data"]) >= 30
+        assert (
+            client.get(f"/api/v1/{resource}?sort=unknown", headers=headers["admin"]).status_code
+            == 422
+        )
 
 
 def test_staff_deactivation_and_account_role_boundaries(api):
