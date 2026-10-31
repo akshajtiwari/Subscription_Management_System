@@ -139,9 +139,9 @@ def hash_password(password: str, salt=None):
 def valid_password(password):
     return (
         len(password) > 8
-        and bool(re.search("[A-Z]", password))
-        and bool(re.search("[a-z]", password))
-        and bool(re.search("[^A-Za-z0-9]", password))
+        and any(character.isupper() for character in password)
+        and any(character.islower() for character in password)
+        and any(not character.isalnum() and not character.isspace() for character in password)
     )
 
 

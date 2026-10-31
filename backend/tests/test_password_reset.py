@@ -49,3 +49,27 @@ def test_public_registration_cannot_assign_roles_or_accept_invalid_email(api):
         ).status_code
         == 422
     )
+
+
+def test_password_strength_accepts_unicode_letters_but_not_space_as_special(api):
+    client, _, _ = api
+    assert (
+        client.post(
+            "/api/v1/auth/register",
+            json={"name": "Weak", "email": "weak-space@example.test", "password": "Upperlower "},
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/register",
+            json={"name": "Unicode", "email": "unicode@example.test", "password": "Ääpassword!1"},
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"email": "unicode@example.test", "password": "Ääpassword!1"}
+        ).status_code
+        == 200
+    )
