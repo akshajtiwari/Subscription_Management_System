@@ -189,16 +189,29 @@ The outbox is available from the admin's account page (the avatar in the top bar
 
 ### Seeded fictional workspace
 
-The first start creates 1,284 active subscriptions, customers, products with
-variants, plans, quote templates, discount and tax rules, and a billing ledger.
+The first start creates over 1,300 subscriptions across their lifecycle stages,
+44 customers, 10 staff accounts, 40 products with variants, 18 plans, quote
+templates, discount and tax rules, and a billing ledger with 450+ invoices and
+500+ payment entries. The customer demo account has its own subscriptions and
+invoice history. Records cover USD, EUR, GBP, and INR.
 Invoices include drafts, paid balances, partial payments, and overdue balances.
 All names, addresses, transactions, and message deliveries are fictional.
 
-The sample ledger is dated **May–October 2026**. In Reports, choose
-**1 August–31 October 2026** to see the seeded monthly history. As of 31 October,
-October collections are **248,600.00 USD**, outstanding balances are **38,400.00 USD**,
-and **24 invoices** are overdue. The dashboard uses today's date, so its figures
-change as time passes and the worker processes new billing periods.
+The expanded ledger covers the **last twelve months**, including the current
+month, alongside the original May–October 2026 samples. Dashboard and report
+charts show six months by default. Change the report dates or currency to explore
+the history. Totals come from the invoices and payments and change when records
+are added or the worker processes a new billing period.
+
+If an existing checkout looks sparse, pull the latest changes and run this from
+the repository root, then refresh the browser:
+
+```text
+pyenv exec python manage.py seed
+```
+
+The API and seed command use the same default database regardless of the terminal's
+working directory. `DATABASE_URL` still selects a custom database when configured.
 
 Restarting adds missing samples without overwriting edits, resetting passwords,
 or duplicating the existing ledger. To start with a fresh SQLite dataset, stop
