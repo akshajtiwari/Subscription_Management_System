@@ -170,7 +170,12 @@ export function Editor({
   const [picker, setPicker] = useState(false);
   const [key] = useState(crypto.randomUUID());
   const [retry, setRetry] = useState(0);
-  const set = (name: string, value: any) => setDraft((current) => ({ ...current, [name]: value }));
+  const set = (name: string, value: any) =>
+    setDraft((current) => ({
+      ...current,
+      [name]: value,
+      ...(name === 'scope' && value === 'subscription' ? { product_ids: [] } : {}),
+    }));
   const plan = references.plans?.find((row) => row.id === Number(draft.plan_id));
   const currency = plan?.currency || draft.currency || 'USD';
   useEffect(() => {
@@ -286,7 +291,13 @@ export function Editor({
     setBusy(true);
     try {
       const payload: Record<string, any> = {};
-      for (const name of ownedFields[kind]) {
+      const keys =
+        kind === 'staff'
+          ? initial
+            ? ['name', 'active']
+            : ['name', 'email', 'password']
+          : ownedFields[kind];
+      for (const name of keys) {
         const value = draft[name];
         if (dateKeys.has(name)) payload[name] = value || null;
         else if (name === 'usage_limit') payload[name] = value === '' ? null : Number(value);
@@ -325,6 +336,15 @@ export function Editor({
     >
       <form noValidate onSubmit={save}>
         <ErrorBox error={error} focus />
+        {Object.keys(errors).length > 0 && (
+          <ul className="field-error-summary">
+            {Object.entries(errors).map(([name, message]) => (
+              <li key={name}>
+                {name.replaceAll('_', ' ')}: {message}
+              </li>
+            ))}
+          </ul>
+        )}
         {loading && <Loading />}
         {error &&
           !Object.keys(references).length &&

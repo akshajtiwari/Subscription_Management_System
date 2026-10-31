@@ -16,7 +16,10 @@ export const day = (value?: string) =>
         timeZone: 'UTC',
       }).format(new Date(value.length === 10 ? `${value}T00:00:00Z` : value))
     : '—';
-export const today = () => new Date().toISOString().slice(0, 10);
+export const today = () => {
+  const value = new Date();
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+};
 
 export function Dialog({
   title,
