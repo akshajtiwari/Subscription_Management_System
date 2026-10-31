@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { request, type Row } from './api';
-import { Metric } from './Overview';
+import { Metric, Trend, type TrendPoint } from './Overview';
 import { Empty, ErrorBox, Field, Loading, amount, label } from './ui';
 
 export function Reports({
@@ -14,13 +14,13 @@ export function Reports({
 }) {
   const now = new Date();
   const [from, setFrom] = useState(
-    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 2, 1)).toISOString().slice(0, 10),
+    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1)).toISOString().slice(0, 10),
   );
   const [to, setTo] = useState(now.toISOString().slice(0, 10)),
     [currency, setCurrency] = useState('USD');
   const [view, setView] = useState('collections'),
     [summary, setSummary] = useState<Row | null>(null),
-    [series, setSeries] = useState<Row[]>([]),
+    [series, setSeries] = useState<TrendPoint[]>([]),
     [overdue, setOverdue] = useState<Row[]>([]);
   const [busy, setBusy] = useState(true),
     [error, setError] = useState(''),
@@ -67,10 +67,6 @@ export function Reports({
   ];
   const points = series.filter((point) => point.currency === currency);
   const latest = points.at(-1);
-  const maximum = Math.max(
-    ...points.map((point) => Number(point[view === 'overdue' ? 'overdue_invoice_count' : view])),
-    1,
-  );
   const title =
     view === 'overdue' ? 'Overdue invoices' : view === 'collections' ? 'Collected' : 'Outstanding';
   const month = (period: string) =>
@@ -138,28 +134,17 @@ export function Reports({
             <div className="panelhead">
               <h2>{title} over time</h2>
             </div>
-            <div className="reportbars collection-chart" aria-label={`${title} in ${currency}`}>
-              {points.map((point) => {
-                const value = point[view === 'overdue' ? 'overdue_invoice_count' : view];
-                return (
-                  <div className="bar" key={point.period}>
-                    <span>{month(point.period)}</span>
-                    <i>
-                      <b
-                        style={
-                          {
-                            '--bar-width': `${(Number(value) / maximum) * 100}%`,
-                          } as React.CSSProperties
-                        }
-                      />
-                    </i>
-                    <span className="mono">
-                      {view === 'overdue' ? value : amount(value, currency)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+            <Trend
+              points={points}
+              field={
+                view === 'overdue'
+                  ? 'overdue_invoice_count'
+                  : view === 'outstanding'
+                    ? 'outstanding'
+                    : 'collections'
+              }
+              title={`${title} over time · ${currency}`}
+            />
           </section>
           <section className="panel">
             <div className="panelhead">

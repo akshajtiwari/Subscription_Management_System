@@ -3,6 +3,14 @@ import { request, type Row, type User } from './api';
 import { Icon } from './Icon';
 import { Empty, ErrorBox, Loading, Status, amount, day } from './ui';
 
+export type TrendPoint = {
+  period: string;
+  currency: string;
+  collections: number | string;
+  outstanding?: number | string;
+  overdue_invoice_count?: number;
+};
+
 export function Metric({ title, value, note }: { title: string; value: string; note: string }) {
   return (
     <div className="card">
@@ -13,13 +21,47 @@ export function Metric({ title, value, note }: { title: string; value: string; n
   );
 }
 
-export function Trend({ points }: { points: Row[] }) {
-  if (!points.length) return <Empty>No payments in this date range.</Empty>;
-  const max = Math.max(...points.map((point) => Number(point.collections)), 1);
-  const min = Math.min(...points.map((point) => Number(point.collections)));
+export function invoiceHistory(invoices: Row[], currency: string, end = new Date()) {
+  const months = Array.from({ length: 6 }, (_, index) =>
+    new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 5 + index, 1))
+      .toISOString()
+      .slice(0, 7),
+  );
+  const eligible = invoices.filter(
+    (invoice) =>
+      invoice.currency === currency &&
+      ['confirmed', 'paid'].includes(invoice.status || '') &&
+      months.includes(invoice.period_start.slice(0, 7)),
+  );
+  if (!eligible.length) return [];
+  return months.map((period) => ({
+    period,
+    currency,
+    collections: eligible
+      .filter((invoice) => invoice.period_start.startsWith(period))
+      .reduce((sum, invoice) => sum + Number(invoice.total), 0),
+  }));
+}
+
+export function Trend({
+  points,
+  field = 'collections',
+  title = 'Collections across the last six months',
+}: {
+  points: TrendPoint[];
+  field?: 'collections' | 'outstanding' | 'overdue_invoice_count';
+  title?: string;
+}) {
+  if (!points.length) return <Empty>No activity in this date range.</Empty>;
+  const value = (point: TrendPoint) => Number(point[field]) || 0;
+  const format = (point: TrendPoint) =>
+    field === 'overdue_invoice_count'
+      ? `${value(point)} invoices`
+      : `${amount(value(point), point.currency)} ${point.currency}`;
+  const max = Math.max(...points.map(value), 1);
   const coordinates = points.map((point, index) => [
     points.length === 1 ? 300 : (index * 600) / (points.length - 1),
-    max === min ? 108 : 168 - ((Number(point.collections) - min) / (max - min)) * 121,
+    168 - (value(point) / max) * 121,
   ]);
   const path = coordinates
     .map(([x, y], index) =>
@@ -28,24 +70,28 @@ export function Trend({ points }: { points: Row[] }) {
         : `M${x} ${y}`,
     )
     .join(' ');
-  const last = coordinates.at(-2) || coordinates.at(-1)!;
   return (
     <>
       <div className="chart-wrap collection-chart">
-        <svg viewBox="0 0 600 205" role="img" aria-label="Collections across the last six months">
+        <svg viewBox="0 0 600 205" role="img" aria-label={title}>
+          <title>{title}</title>
           <path className="chart-grid" d="M0 40H600M0 95H600M0 150H600M0 204H600" />
           <path className="chart-area" d={`${path} V205 H0Z`} />
-          <path className="chart-line" d={path} />
-          <circle className="chart-point" cx={last[0]} cy={last[1]} r="5" />
+          <path className="chart-line" d={path} pathLength="1000" />
+          {coordinates.map(([x, y], index) => (
+            <circle className="chart-point" key={points[index].period} cx={x} cy={y} r="5">
+              <title>{`${points[index].period}: ${format(points[index])}`}</title>
+            </circle>
+          ))}
         </svg>
       </div>
       <div className="chart-labels">
         {points.map((point) => (
-          <span key={point.period} title={amount(point.collections, point.currency)}>
+          <span key={point.period} title={`${point.period}: ${format(point)}`}>
             {new Intl.DateTimeFormat('en', { month: 'short', timeZone: 'UTC' }).format(
               new Date(`${point.period}-01T00:00:00Z`),
             )}
-            <span className="sr-only"> {amount(point.collections, point.currency)}</span>
+            <span className="sr-only"> {format(point)}</span>
           </span>
         ))}
       </div>
@@ -67,7 +113,7 @@ export function Overview({
   const [summary, setSummary] = useState<Row | null>(null),
     [subscriptions, setSubscriptions] = useState<Row[]>([]),
     [invoices, setInvoices] = useState<Row[]>([]),
-    [points, setPoints] = useState<Row[]>([]);
+    [points, setPoints] = useState<TrendPoint[]>([]);
   const [busy, setBusy] = useState(true),
     [error, setError] = useState(''),
     [retry, setRetry] = useState(0),
@@ -108,7 +154,9 @@ export function Overview({
       });
     return () => controller.abort();
   }, [token, revision, retry, own]);
-  const currencies = Object.keys(summary?.currencies || {}),
+  const currencies = own
+      ? [...new Set<string>(invoices.map((invoice) => invoice.currency))]
+      : Object.keys(summary?.currencies || {}),
     metrics = summary?.currencies?.[currency] || {};
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthCollections = points
@@ -195,17 +243,14 @@ export function Overview({
             <span className="chart-range">Last 6 months</span>
           </div>
           <Trend
+            title={
+              own
+                ? `Invoice totals over six months · ${currency}`
+                : `Collections over six months · ${currency}`
+            }
             points={
               own
-                ? invoices
-                    .filter((invoice) => invoice.status === 'paid')
-                    .map((invoice) => ({
-                      id: invoice.id,
-                      period: invoice.period_start.slice(0, 7),
-                      collections: invoice.total,
-                      currency: invoice.currency,
-                    }))
-                    .reverse()
+                ? invoiceHistory(invoices, currency)
                 : points.filter((point) => point.currency === currency)
             }
           />
@@ -286,7 +331,7 @@ export function Overview({
               </tr>
             </thead>
             <tbody>
-              {subscriptions.slice(0, 2).map((subscription) => (
+              {subscriptions.slice(0, 8).map((subscription) => (
                 <tr key={subscription.id} data-go={`subscriptions/${subscription.id}`}>
                   <td>
                     <button

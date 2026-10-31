@@ -374,7 +374,7 @@ export function App() {
   }, [mobile, mobileOpen]);
   function listPath(cursor = 0) {
     const query = new URLSearchParams({ limit: '25', search });
-    if (route.resource === 'subscriptions') query.set('sort', 'newest');
+    query.set('sort', 'newest');
     if (cursor) query.set('cursor', String(cursor));
     if (status === 'overdue' && route.resource === 'invoices') query.set('overdue', 'true');
     else if (route.resource === 'staff' && status) query.set('active', String(status === 'active'));
@@ -571,7 +571,11 @@ export function App() {
       onSaved={() => {
         setEditor(null);
         completed('Saved');
-        navigate(editor.kind);
+        if (!editor.initial) {
+          setSearch('');
+          setStatus('');
+        }
+        navigate(editor.kind, undefined, editor.initial ? undefined : '');
       }}
     />
   );
