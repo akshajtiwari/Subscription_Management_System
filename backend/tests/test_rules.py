@@ -51,3 +51,55 @@ def test_tax_rules_follow_customer_jurisdiction():
     result = invoice_amount(plan, [], [], taxes, date(2026, 2, 1), {"country": "US"})
     assert result["tax_total"] == "5.00"
     assert result["taxes"] == [{"name": "US rule", "rate_percent": "5", "amount": "5.00"}]
+
+
+def test_fixed_discount_allocation_and_line_taxes_sum_to_invoice():
+    from decimal import Decimal
+
+    plan = {"name": "Plan", "price": "0.01", "currency": "USD"}
+    lines = [
+        {
+            "product_id": index,
+            "name": "Seat",
+            "unit_price": "0.01",
+            "quantity": 1,
+            "currency": "USD",
+        }
+        for index in range(3)
+    ]
+    discount = {
+        "id": 1,
+        "kind": "fixed",
+        "value": "0.02",
+        "starts_on": "2026-01-01",
+        "scope": "subscription",
+    }
+    tax = {"name": "Tax", "rate_percent": "50", "effective_from": "2026-01-01"}
+    invoice = invoice_amount(plan, lines, [discount], [tax], date(2026, 2, 1))
+    all_lines = [invoice["plan_line"], *invoice["lines"]]
+    assert sum(Decimal(line["discount"]) for line in all_lines) == Decimal(
+        invoice["discount_total"]
+    )
+    assert sum(Decimal(line["tax_total"]) for line in all_lines) == Decimal(invoice["tax_total"])
+    assert sum(Decimal(line["line_total"]) for line in all_lines) == Decimal(invoice["total"])
+    assert all(Decimal(line["line_total"]) >= 0 for line in all_lines)
+
+
+def test_product_scoped_discount_excludes_plan_and_other_products():
+    plan = {"price": "100.00", "currency": "USD"}
+    lines = [
+        {"product_id": 1, "unit_price": "10.00", "quantity": 1, "currency": "USD"},
+        {"product_id": 2, "unit_price": "20.00", "quantity": 1, "currency": "USD"},
+    ]
+    rule = {
+        "id": 1,
+        "kind": "fixed",
+        "value": "100.00",
+        "starts_on": "2026-01-01",
+        "scope": "products",
+        "product_ids": [1],
+    }
+    result = invoice_amount(plan, lines, [rule], [], date(2026, 2, 1))
+    assert result["discount_total"] == "10.00"
+    assert result["plan_line"]["discount"] == "0.00"
+    assert result["lines"][1]["discount"] == "0.00"

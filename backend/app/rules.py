@@ -1,6 +1,6 @@
 import calendar
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
 
 from .currencies import CURRENCY_DIGITS
 
@@ -29,61 +29,80 @@ def invoice_balance(total, payments, currency="USD"):
     return {"amount_paid": str(paid), "amount_due": str(due)}
 
 
+def allocate_discount(total, bases, currency):
+    if not total or not sum(bases):
+        return [money(0, currency) for _ in bases]
+    quantum = Decimal(1).scaleb(-CURRENCY_DIGITS[currency])
+    exact = [total * base / sum(bases) for base in bases]
+    allocated = [value.quantize(quantum, rounding=ROUND_DOWN) for value in exact]
+    remaining = int((total - sum(allocated)) / quantum)
+    for index in sorted(range(len(bases)), key=lambda i: (-(exact[i] - allocated[i]), i))[
+        :remaining
+    ]:
+        allocated[index] += quantum
+    return allocated
+
+
 def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
     jurisdiction = jurisdiction or {}
     currency = plan["currency"]
     plan_fee = money(plan["price"], currency)
-    resolved = []
-    subtotal = plan_fee
+    components = [
+        {
+            "name": plan.get("name", "Plan fee"),
+            "quantity": 1,
+            "unit_price": str(plan_fee),
+            "subtotal": str(plan_fee),
+        }
+    ]
     for line in lines:
         if line["currency"] != currency:
             raise ValueError("currency_mismatch")
-        amount = money(Decimal(line["unit_price"]) * int(line["quantity"]), currency)
-        subtotal += amount
-        resolved.append({**line, "amount": str(amount)})
+        subtotal = money(Decimal(line["unit_price"]) * int(line["quantity"]), currency)
+        components.append({**line, "subtotal": str(subtotal)})
+    bases = [money(line["subtotal"], currency) for line in components]
+    subtotal = sum(bases, money(0, currency))
     eligible = []
     for rule in discounts:
-        if rule.get("currency", currency) != currency:
+        if rule.get("currency", currency) != currency or not rule.get("active", True):
             continue
         if (
-            not rule.get("active", True)
-            or on.isoformat() < rule["starts_on"]
-            or (rule.get("ends_on") and on.isoformat() > rule["ends_on"])
+            on.isoformat() < rule["starts_on"]
+            or rule.get("ends_on")
+            and on.isoformat() > rule["ends_on"]
         ):
             continue
-        if (
-            rule.get("usage_limit") is not None
-            and rule.get("usage_count", 0) >= rule["usage_limit"]
+        if rule.get("usage_limit") is not None and int(rule.get("usage_count", 0)) >= int(
+            rule["usage_limit"]
         ):
             continue
         if subtotal < money(rule.get("minimum_purchase", 0), currency) or sum(
-            int(x["quantity"]) for x in lines
+            int(line["quantity"]) for line in lines
         ) < int(rule.get("minimum_quantity", 0)):
             continue
-        base = (
-            subtotal
+        eligible_bases = [
+            base
             if rule.get("scope") != "products"
-            else sum(
-                (
-                    money(x["amount"], currency)
-                    for x in resolved
-                    if x.get("product_id") in rule.get("product_ids", [])
-                ),
-                Decimal(0),
-            )
-        )
+            or index > 0
+            and components[index].get("product_id") in rule.get("product_ids", [])
+            else money(0, currency)
+            for index, base in enumerate(bases)
+        ]
+        base = sum(eligible_bases)
         reduction = (
             money(base * Decimal(rule["value"]) / 100, currency)
             if rule["kind"] == "percentage"
             else money(rule["value"], currency)
         )
         if base > 0:
-            eligible.append((min(base, reduction), str(rule.get("id", "")), rule))
-    discount, _, chosen = (
-        min(eligible, key=lambda x: (-x[0], x[1])) if eligible else (Decimal(0), "", None)
-    )
-    taxable = subtotal - discount
-    tax_breakdown = []
+            eligible.append((min(base, reduction), str(rule.get("id", "")), rule, eligible_bases))
+    if eligible:
+        discount, _, chosen, eligible_bases = min(eligible, key=lambda value: (-value[0], value[1]))
+        allocated = allocate_discount(discount, eligible_bases, currency)
+    else:
+        discount, chosen = money(0, currency), None
+        allocated = [money(0, currency) for _ in components]
+    eligible_taxes = []
     for tax in taxes:
         if (
             not tax.get("active", True)
@@ -99,25 +118,51 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
             and tax["region"] != jurisdiction.get("region")
         ):
             continue
-        tax_breakdown.append(
+        eligible_taxes.append(tax)
+    tax_sums = [money(0, currency) for _ in eligible_taxes]
+    for index, component in enumerate(components):
+        net = bases[index] - allocated[index]
+        line_taxes = []
+        for tax_index, tax in enumerate(eligible_taxes):
+            charge = money(net * Decimal(tax["rate_percent"]) / 100, currency)
+            tax_sums[tax_index] += charge
+            line_taxes.append(
+                {
+                    "name": tax.get("name", "Tax"),
+                    "rate_percent": tax["rate_percent"],
+                    "amount": str(charge),
+                }
+            )
+        total_tax = sum((money(tax["amount"], currency) for tax in line_taxes), money(0, currency))
+        component.update(
             {
-                "name": tax.get("name", "Tax"),
-                "rate_percent": tax["rate_percent"],
-                "amount": str(money(taxable * Decimal(tax["rate_percent"]) / 100, currency)),
+                "discount": str(allocated[index]),
+                "taxes": line_taxes,
+                "tax_total": str(total_tax),
+                "amount": str(net + total_tax),
+                "line_total": str(net + total_tax),
             }
         )
-    tax_total = sum((money(tax["amount"], currency) for tax in tax_breakdown), Decimal(0))
+    tax_total = sum(tax_sums, money(0, currency))
     return {
         "currency": currency,
         "plan_fee": str(plan_fee),
-        "lines": resolved,
+        "plan_line": components[0],
+        "lines": components[1:],
         "subtotal": str(subtotal),
         "discount_total": str(discount),
         "discount_rule_id": chosen.get("id") if chosen else None,
-        "taxes": tax_breakdown,
+        "taxes": [
+            {
+                "name": tax.get("name", "Tax"),
+                "rate_percent": tax["rate_percent"],
+                "amount": str(tax_sums[index]),
+            }
+            for index, tax in enumerate(eligible_taxes)
+        ],
         "tax_total": str(tax_total),
         "total": str(subtotal - discount + tax_total),
-        "amount_paid": "0.00",
+        "amount_paid": str(money(0, currency)),
     }
 
 
