@@ -25,7 +25,8 @@ def invoice_balance(total, payments):
     return {"amount_paid": str(paid), "amount_due": str(due)}
 
 
-def invoice_amount(plan, lines, discounts, taxes, on: date):
+def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
+    jurisdiction = jurisdiction or {}
     currency = plan["currency"]
     plan_fee = money(plan["price"])
     resolved = []
@@ -49,5 +50,12 @@ def invoice_amount(plan, lines, discounts, taxes, on: date):
         eligible.append((min(base, reduction), str(rule.get("id", "")), rule))
     discount, _, chosen = max(eligible, key=lambda x: (x[0], x[1])) if eligible else (Decimal(0), "", None)
     taxable = subtotal - discount
-    tax_total = sum((money(taxable * money(t["rate_percent"]) / 100) for t in taxes if t.get("active", True) and t["effective_from"] <= on.isoformat() and (not t.get("effective_until") or t["effective_until"] >= on.isoformat())), Decimal(0))
-    return {"currency": currency, "plan_fee": str(plan_fee), "lines": resolved, "subtotal": str(subtotal), "discount_total": str(discount), "discount_rule_id": chosen.get("id") if chosen else None, "tax_total": str(tax_total), "total": str(subtotal - discount + tax_total), "amount_paid": "0.00"}
+    tax_breakdown = []
+    for tax in taxes:
+        if not tax.get("active", True) or tax["effective_from"] > on.isoformat() or tax.get("effective_until") and tax["effective_until"] < on.isoformat():
+            continue
+        if tax.get("country") and tax["country"] != jurisdiction.get("country") or tax.get("region") and tax["region"] != jurisdiction.get("region"):
+            continue
+        tax_breakdown.append({"name": tax.get("name", "Tax"), "rate_percent": tax["rate_percent"], "amount": str(money(taxable * money(tax["rate_percent"]) / 100))})
+    tax_total = sum((money(tax["amount"]) for tax in tax_breakdown), Decimal(0))
+    return {"currency": currency, "plan_fee": str(plan_fee), "lines": resolved, "subtotal": str(subtotal), "discount_total": str(discount), "discount_rule_id": chosen.get("id") if chosen else None, "taxes": tax_breakdown, "tax_total": str(tax_total), "total": str(subtotal - discount + tax_total), "amount_paid": "0.00"}

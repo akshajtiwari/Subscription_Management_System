@@ -29,3 +29,14 @@ def test_partial_payment_and_overpayment_boundary():
         assert str(error) == "payment_exceeds_total"
     else:
         raise AssertionError("overpayment was accepted")
+
+
+def test_tax_rules_follow_customer_jurisdiction():
+    plan = {"price": "100.00", "currency": "USD"}
+    taxes = [
+        {"name": "US rule", "rate_percent": "5", "country": "US", "effective_from": "2026-01-01"},
+        {"name": "CA rule", "rate_percent": "10", "country": "CA", "effective_from": "2026-01-01"},
+    ]
+    result = invoice_amount(plan, [], [], taxes, date(2026, 2, 1), {"country": "US"})
+    assert result["tax_total"] == "5.00"
+    assert result["taxes"] == [{"name": "US rule", "rate_percent": "5", "amount": "5.00"}]

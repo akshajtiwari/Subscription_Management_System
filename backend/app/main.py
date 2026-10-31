@@ -200,7 +200,7 @@ def customers(user: User = Depends(current), session: DbSession = Depends(db)):
 
 @app.get("/api/v1/catalog-items")
 def catalog_items(search: str = "", user: User = Depends(current), session: DbSession = Depends(db)):
-    allowed(user, "admin", "staff")
+    allowed(user, "admin", "staff", "customer")
     rows = []
     for product in session.scalars(select(Record).where(Record.kind == "products", Record.status == "active")):
         data = product.payload
@@ -214,6 +214,11 @@ def catalog_items(search: str = "", user: User = Depends(current), session: DbSe
 
 
 def resolved_subscription(session, payload):
+    if payload.get("template_id") and not payload.get("lines"):
+        template = session.get(Record, payload["template_id"])
+        if not template or template.kind != "quotation-templates" or template.status != "active":
+            fail("template_unavailable")
+        payload = {**payload, "plan_id": payload.get("plan_id") or template.payload.get("plan_id"), "lines": template.payload.get("lines", []), "validity_days": template.payload.get("validity_days", 30)}
     customer = session.get(User, payload.get("customer_id"))
     plan = session.get(Record, payload.get("plan_id"))
     if not customer or customer.role != "customer" or not plan or plan.kind != "plans" or plan.status != "active":
@@ -278,6 +283,26 @@ def billing_run(body: dict, idempotency_key: str = Header(...), user: User = Dep
         return previous.result
     due_on = date.fromisoformat(body["due_on"])
     counts = {"created_count": 0, "skipped_count": 0, "failed_count": 0, "failures": []}
+    for subscription in session.scalars(select(Record).where(Record.kind == "subscriptions").with_for_update()):
+        change = subscription.payload.get("pending_change")
+        if not change or date.fromisoformat(subscription.payload.get("next_billing_date", subscription.payload["start_date"])) > due_on:
+            continue
+        try:
+            action = change["action"]
+            payload = {key: value for key, value in subscription.payload.items() if key != "pending_change"}
+            if action == "add_on":
+                updated = resolved_subscription(session, {**payload, "lines": payload["lines"] + [{"product_id": change["product_id"], "variant_id": change.get("variant_id"), "quantity": change["quantity"]}]})
+                payload = {**updated, "next_billing_date": payload["next_billing_date"]}
+            elif action == "renew":
+                plan_for_change = get_record(session, "plans", payload["plan_id"], user).payload
+                payload["expiry_date"] = next_date(date.fromisoformat(payload["expiry_date"]), plan_for_change["billing_interval"]).isoformat()
+            elif action in {"pause", "close", "resume"}:
+                subscription.status = {"pause": "paused", "close": "closed", "resume": "active"}[action]
+            subscription.payload = payload
+            event(session, "subscriptions", subscription.id, f"approved_{action}")
+        except (KeyError, ValueError) as exc:
+            counts["failed_count"] += 1
+            counts["failures"].append({"subscription_id": subscription.id, "reason": f"approved_change: {exc}"})
     for subscription in session.scalars(select(Record).where(Record.kind == "subscriptions", Record.status == "active").with_for_update()):
         try:
             plan = get_record(session, "plans", subscription.payload["plan_id"], user).payload
@@ -313,7 +338,7 @@ def billing_run(body: dict, idempotency_key: str = Header(...), user: User = Dep
                 lines = subscription.payload["lines"]
                 discounts = [r.payload | {"id": r.id} for r in session.scalars(select(Record).where(Record.kind == "discount-rules"))]
                 taxes = [r.payload for r in session.scalars(select(Record).where(Record.kind == "tax-rules"))]
-                snapshot = invoice_amount(plan, lines, discounts, taxes, next_on)
+                snapshot = invoice_amount(plan, lines, discounts, taxes, next_on, {"country": subscription.payload.get("billing_country"), "region": subscription.payload.get("billing_region")})
                 invoice = Invoice(number=f"INV-{secrets.token_hex(5).upper()}", subscription_id=subscription.id, customer_id=subscription.owner_id, period_start=next_on.isoformat(), period_end=end.isoformat(), due_on=(next_on + timedelta(days=int(subscription.payload.get("payment_terms_days", 14)))).isoformat(), snapshot=snapshot)
                 session.add(invoice)
                 session.flush()
@@ -604,6 +629,10 @@ def customer_request(record_id: int, body: dict, user: User = Depends(current), 
         fail("plan_disallows_action", 409)
     if body["action"] == "resume" and subscription.status != "paused" or body["action"] == "pause" and subscription.status != "active":
         fail("invalid_transition", 409)
+    if body["action"] == "add_on":
+        if not body.get("product_id") or int(body.get("quantity", 0)) <= 0:
+            fail("missing_add_on")
+        resolved_subscription(session, {**subscription.payload, "lines": subscription.payload["lines"] + [{"product_id": body["product_id"], "variant_id": body.get("variant_id"), "quantity": body["quantity"]}]})
     request = Record(kind="requests", number=f"REQ-{secrets.token_hex(4).upper()}", owner_id=user.id, status="pending", payload={"subscription_id": subscription.id, **body})
     session.add(request)
     session.commit()
