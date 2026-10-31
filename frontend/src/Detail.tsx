@@ -127,7 +127,9 @@ export function Detail({
     kind === 'requests'
       ? internal && row.status === 'pending'
         ? ['approve', 'reject']
-        : []
+        : internal && row.status === 'approved'
+          ? ['reject']
+          : []
       : kind === 'invoices'
         ? internal
           ? row.available_actions || []

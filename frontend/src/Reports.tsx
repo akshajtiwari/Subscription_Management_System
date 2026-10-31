@@ -27,36 +27,35 @@ export function Reports({
     setBusy(true);
     setError('');
     if (from && to && from > to) {
+      setSummary(null);
+      setSeries([]);
+      setOverdue([]);
       setError('From date must be on or before To date.');
       setBusy(false);
       return;
     }
     const query = `?start=${from}&end=${to}`;
-    Promise.allSettled([
-      request(`reports/overview${query}`, token, { signal: controller.signal }),
-      request(`reports/collections-series${query}`, token, { signal: controller.signal }),
-      request(`reports/overdue-invoices${query}`, token, { signal: controller.signal }),
-    ]).then((results) => {
-      if (controller.signal.aborted) return;
-      const failures = results.filter((result) => result.status === 'rejected');
-      if (failures.length)
-        setError(
-          failures.map((result) => (result as PromiseRejectedResult).reason.message).join(' '),
-        );
-      if (results[0].status === 'fulfilled') setSummary(results[0].value);
-      if (results[1].status === 'fulfilled') setSeries(results[1].value.data);
-      if (results[2].status === 'fulfilled') setOverdue(results[2].value.data);
-      setBusy(false);
-    });
+    request(`reports/summary${query}`, token, { signal: controller.signal })
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setSummary(result.overview);
+        const available = Object.keys(result.overview.currencies);
+        setCurrency((current) => (available.includes(current) ? current : available[0] || 'USD'));
+        setSeries(result.series);
+        setOverdue(result.overdue);
+      })
+      .catch((cause) => {
+        if (cause.name !== 'AbortError') setError(cause.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setBusy(false);
+      });
     return () => controller.abort();
   }, [token, from, to, retry, revision]);
   const currencies = [
-    ...new Set([
-      'USD',
-      ...Object.keys(summary?.currencies || {}),
-      ...series.map((row) => row.currency),
-    ]),
+    ...new Set([...Object.keys(summary?.currencies || {}), ...series.map((row) => row.currency)]),
   ];
+  if (!currencies.length) currencies.push('USD');
   const metrics = summary?.currencies?.[currency] || {
     collections: '0',
     outstanding: '0',

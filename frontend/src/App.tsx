@@ -282,6 +282,7 @@ export function App() {
     [collapsed, setCollapsed] = useState(
       localStorage.getItem('brightloop-nav-collapsed') === 'true',
     );
+  const resourceRef = useRef(route.resource);
   const sidebar = useRef<HTMLElement>(null),
     toggle = useRef<HTMLButtonElement>(null);
   const resource = resources.find((item) => item.id === route.resource);
@@ -337,12 +338,16 @@ export function App() {
   }, [token]);
   useEffect(() => {
     const listener = () => {
-      setRoute(routeFromHash());
+      const next = routeFromHash();
+      setRoute(next);
+      if (next.resource !== resourceRef.current) {
+        setSearch('');
+        setStatus('');
+      }
+      resourceRef.current = next.resource;
       setEditor(null);
       setReview(null);
       setMobileOpen(false);
-      setSearch('');
-      setStatus('');
       setError('');
     };
     addEventListener('hashchange', listener);
@@ -525,18 +530,12 @@ export function App() {
       {mobile && mobileOpen && (
         <button
           className="nav-scrim"
+          tabIndex={-1}
           aria-label="Close navigation"
           onClick={() => setMobileOpen(false)}
         />
       )}
-      <aside
-        ref={sidebar}
-        id="sidebar"
-        className="sidebar"
-        aria-label="Main navigation"
-        role={mobile && mobileOpen ? 'dialog' : undefined}
-        aria-modal={mobile && mobileOpen ? true : undefined}
-      >
+      <aside ref={sidebar} id="sidebar" className="sidebar" aria-label="Main navigation">
         <div className="brand">
           <span className="brand-symbol">b·</span>
           <strong>brightloop</strong>
