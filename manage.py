@@ -42,6 +42,9 @@ def execute(command):
         npm("run", "dev", "--", "--host", "127.0.0.1", "--port", "5173", "--strictPort")
     elif command == "worker":
         python("-m", "app.worker")
+    elif command == "seed":
+        python("-m", "alembic", "upgrade", "head")
+        python("-m", "app.seed")
     elif command == "test":
         python(
             "-m",
@@ -90,6 +93,7 @@ def main():
             "dev-api",
             "dev-web",
             "worker",
+            "seed",
             "test",
             "build",
             "format",

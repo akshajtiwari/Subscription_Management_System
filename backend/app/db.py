@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -80,7 +81,10 @@ class Idempotency(Base):
     result: Mapped[dict] = mapped_column(JSON)
 
 
-url = os.getenv("DATABASE_URL", "sqlite:///./brightloop.db")
+url = os.getenv(
+    "DATABASE_URL",
+    f"sqlite:///{(Path(__file__).resolve().parents[1] / 'brightloop.db').as_posix()}",
+)
 engine = create_engine(
     url,
     connect_args={"check_same_thread": False} if url.startswith("sqlite") else {},
