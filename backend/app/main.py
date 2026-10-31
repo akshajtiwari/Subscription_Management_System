@@ -8,7 +8,6 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, Query
@@ -31,6 +30,7 @@ from .rules import (
     subscription_actions,
 )
 from .pdf import invoice_pdf
+from .reporting import report_snapshot
 from .schemas import AccountUpdate, StaffUpdate, CustomerChange, PaymentInput, SCHEMAS, parse_record
 
 
@@ -1110,57 +1110,27 @@ def payments(user: User = Depends(current), session: DbSession = Depends(db)):
     }
 
 
+def report_result(session, start, end):
+    try:
+        return report_snapshot(session, start, end)
+    except ValueError:
+        fail("invalid_report_dates")
+
+
+@app.get("/api/v1/reports/summary")
+def report_summary(
+    start: str = "", end: str = "", user: User = Depends(current), session: DbSession = Depends(db)
+):
+    allowed(user, "admin", "staff")
+    return report_result(session, start, end)
+
+
 @app.get("/api/v1/reports/overview")
 def report(
     start: str = "", end: str = "", user: User = Depends(current), session: DbSession = Depends(db)
 ):
     allowed(user, "admin", "staff")
-    grouped = {}
-    for invoice in session.scalars(select(Invoice)):
-        if start and invoice.due_on < start or end and invoice.due_on > end:
-            continue
-        row = invoice_json(invoice, session)
-        currency = row["currency"]
-        bucket = grouped.setdefault(
-            currency,
-            {
-                "collections": Decimal(0),
-                "outstanding": Decimal(0),
-                "overdue_amount": Decimal(0),
-                "overdue_invoice_count": 0,
-            },
-        )
-        bucket["outstanding"] += money(row["amount_due"], currency)
-        if row["overdue"]:
-            bucket["overdue_amount"] += money(row["amount_due"], currency)
-            bucket["overdue_invoice_count"] += 1
-    for payment in session.scalars(select(Payment)):
-        paid_on = payment.paid_at[:10]
-        if start and paid_on < start or end and paid_on > end:
-            continue
-        bucket = grouped.setdefault(
-            payment.currency,
-            {
-                "collections": Decimal(0),
-                "outstanding": Decimal(0),
-                "overdue_amount": Decimal(0),
-                "overdue_invoice_count": 0,
-            },
-        )
-        bucket["collections"] += money(payment.amount, payment.currency)
-    return {
-        "active_subscriptions": session.query(Record)
-        .filter(Record.kind == "subscriptions", Record.status == "active")
-        .count(),
-        "currencies": {
-            k: {
-                name: str(value) if isinstance(value, Decimal) else value
-                for name, value in bucket.items()
-            }
-            for k, bucket in grouped.items()
-        },
-        "as_of": datetime.now(timezone.utc).isoformat(),
-    }
+    return report_result(session, start, end)["overview"]
 
 
 @app.get("/api/v1/reports/collections-series")
@@ -1168,29 +1138,15 @@ def collections_series(
     start: str = "", end: str = "", user: User = Depends(current), session: DbSession = Depends(db)
 ):
     allowed(user, "admin", "staff")
-    points = {}
-    for payment in session.scalars(select(Payment)):
-        paid_on = payment.paid_at[:10]
-        if start and paid_on < start or end and paid_on > end:
-            continue
-        key = (paid_on[:7], payment.currency)
-        points[key] = points.get(key, Decimal(0)) + money(payment.amount, payment.currency)
-    return {
-        "data": [
-            {"period": period, "currency": currency, "collections": str(points[(period, currency)])}
-            for period, currency in sorted(points)
-        ]
-    }
+    return {"data": report_result(session, start, end)["series"]}
 
 
 @app.get("/api/v1/reports/overdue-invoices")
-def overdue_invoices(user: User = Depends(current), session: DbSession = Depends(db)):
+def overdue_invoices(
+    start: str = "", end: str = "", user: User = Depends(current), session: DbSession = Depends(db)
+):
     allowed(user, "admin", "staff")
-    rows = [
-        invoice_json(invoice, session)
-        for invoice in session.scalars(select(Invoice).where(Invoice.status == "confirmed"))
-    ]
-    return {"data": sorted((row for row in rows if row["overdue"]), key=lambda row: row["due_on"])}
+    return {"data": report_result(session, start, end)["overdue"]}
 
 
 @app.get("/api/v1/{kind}")
