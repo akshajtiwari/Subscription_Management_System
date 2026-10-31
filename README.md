@@ -55,7 +55,7 @@ Install Git, Make, and the libraries needed to compile Python:
 
 ```bash
 sudo apt update
-sudo apt install -y git pyenv exec python manage.py build-essential ca-certificates wget \
+sudo apt install -y git make build-essential ca-certificates wget \
   libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
   libncurses-dev xz-utils tk-dev libffi-dev liblzma-dev
 git clone https://github.com/pyenv/pyenv.git "$HOME/.pyenv"
@@ -154,7 +154,7 @@ requires internet access and may take several minutes on Linux/macOS while Pytho
 pyenv exec python manage.py dev
 ```
 
-This command applies database migrations, seeds an empty database, and starts all
+This command applies database migrations, adds missing fictional demo records, and starts all
 three processes:
 
 | Process           | Address / behavior                                       |
@@ -185,6 +185,25 @@ Use the admin account to manage catalog and pricing rules or staff access. Staff
 can manage operational workflows and approve customer requests. Customers see
 their own subscriptions, invoices, payments, and change requests. Test a reset
 from **Forgot password**, then open **Demo outbox** as an admin to find its link.
+The outbox is available from the admin's account page (the avatar in the top bar).
+
+### Seeded fictional workspace
+
+The first start creates 1,284 active subscriptions, customers, products with
+variants, plans, quote templates, discount and tax rules, and a billing ledger.
+Invoices include drafts, paid balances, partial payments, and overdue balances.
+All names, addresses, transactions, and message deliveries are fictional.
+
+The sample ledger is dated **May–October 2026**. In Reports, choose
+**1 August–31 October 2026** to see the seeded monthly history. As of 31 October,
+October collections are **248,600.00 USD**, outstanding balances are **38,400.00 USD**,
+and **24 invoices** are overdue. The dashboard uses today's date, so its figures
+change as time passes and the worker processes new billing periods.
+
+Restarting adds missing samples without overwriting edits, resetting passwords,
+or duplicating the existing ledger. To start with a fresh SQLite dataset, stop
+the app, move `backend/brightloop.db` to a backup location, and start it again.
+Keep that backup if you need your existing records.
 
 ### Run in the background (Linux / macOS)
 
@@ -243,7 +262,11 @@ system packages may ask for sudo access.
 The browser suite starts its own API and frontend on **8003** and **5175**, with a
 fresh temporary SQLite database. Leave those ports free. It covers the desktop
 billing workflow, role boundaries, password reset, form retries, and mobile
-navigation/focus. Results are written to `frontend/playwright-report` and
+navigation/focus. Visual checks preserve the approved stylesheet's SHA-256 and
+compare sign-in with the approved reference at desktop and mobile sizes. The
+Adwaita fonts are bundled so a fresh device uses the same typography; their
+license is in `frontend/public/fonts/LICENSE`.
+Results are written to `frontend/playwright-report` and
 `frontend/test-results`. Open the report with:
 
 ```bash
@@ -340,7 +363,7 @@ use. Keep personal credentials and payment secrets out of Git.
 ## Troubleshooting
 
 - **`pyenv: command not found`**: finish shell initialization and open a new terminal.
-- **Python version is not installed**: run `pyenv install -s 3.12.0` from the root.
+- **Python version is not installed**: run `pyenv install 3.12.0` from the root.
 - **Python compilation fails**: install the OS build libraries above and retry.
   An OpenSSL or SQLite import error usually means a build dependency was missing.
 - **`make: command not found`**: install Make or finish the macOS command line tools
@@ -349,8 +372,9 @@ use. Keep personal credentials and payment secrets out of Git.
   environment or `node_modules` copied from another computer.
 - **Address already in use**: stop the old preview process, or the service using
   5173/8001. Browser tests separately require 5175/8003.
-- **PostgreSQL connection refused**: start Docker, check `docker compose ps`, and
-  wait for `pg_isready` to succeed.
+- **PostgreSQL connection refused**: on Windows, start the PostgreSQL service in
+  Windows Services. With Docker, check `docker compose ps` and wait for
+  `pg_isready` to succeed.
 - **Demo password no longer works**: existing databases retain account changes.
   Use password reset and the admin outbox. For a fresh SQLite demo, stop all app
   processes, move `backend/brightloop.db` to a backup location, and run `pyenv exec python manage.py dev`.
