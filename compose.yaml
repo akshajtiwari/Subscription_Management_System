@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: brightloop
       POSTGRES_PASSWORD: demo_only
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - brightloop_data:/var/lib/postgresql/data
 volumes:

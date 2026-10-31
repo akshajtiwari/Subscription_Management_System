@@ -39,23 +39,76 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
         resolved.append({**line, "amount": str(amount)})
     eligible = []
     for rule in discounts:
-        if not rule.get("active", True) or on.isoformat() < rule["starts_on"] or (rule.get("ends_on") and on.isoformat() > rule["ends_on"]):
+        if (
+            not rule.get("active", True)
+            or on.isoformat() < rule["starts_on"]
+            or (rule.get("ends_on") and on.isoformat() > rule["ends_on"])
+        ):
             continue
-        if rule.get("usage_limit") is not None and rule.get("usage_count", 0) >= rule["usage_limit"]:
+        if (
+            rule.get("usage_limit") is not None
+            and rule.get("usage_count", 0) >= rule["usage_limit"]
+        ):
             continue
-        if subtotal < money(rule.get("minimum_purchase", 0)) or sum(int(x["quantity"]) for x in lines) < int(rule.get("minimum_quantity", 0)):
+        if subtotal < money(rule.get("minimum_purchase", 0)) or sum(
+            int(x["quantity"]) for x in lines
+        ) < int(rule.get("minimum_quantity", 0)):
             continue
-        base = subtotal if rule.get("scope") != "products" else sum((money(x["amount"]) for x in resolved if x.get("product_id") in rule.get("product_ids", [])), Decimal(0))
-        reduction = money(base * money(rule["value"]) / 100) if rule["kind"] == "percentage" else money(rule["value"])
+        base = (
+            subtotal
+            if rule.get("scope") != "products"
+            else sum(
+                (
+                    money(x["amount"])
+                    for x in resolved
+                    if x.get("product_id") in rule.get("product_ids", [])
+                ),
+                Decimal(0),
+            )
+        )
+        reduction = (
+            money(base * money(rule["value"]) / 100)
+            if rule["kind"] == "percentage"
+            else money(rule["value"])
+        )
         eligible.append((min(base, reduction), str(rule.get("id", "")), rule))
-    discount, _, chosen = max(eligible, key=lambda x: (x[0], x[1])) if eligible else (Decimal(0), "", None)
+    discount, _, chosen = (
+        max(eligible, key=lambda x: (x[0], x[1])) if eligible else (Decimal(0), "", None)
+    )
     taxable = subtotal - discount
     tax_breakdown = []
     for tax in taxes:
-        if not tax.get("active", True) or tax["effective_from"] > on.isoformat() or tax.get("effective_until") and tax["effective_until"] < on.isoformat():
+        if (
+            not tax.get("active", True)
+            or tax["effective_from"] > on.isoformat()
+            or tax.get("effective_until")
+            and tax["effective_until"] < on.isoformat()
+        ):
             continue
-        if tax.get("country") and tax["country"] != jurisdiction.get("country") or tax.get("region") and tax["region"] != jurisdiction.get("region"):
+        if (
+            tax.get("country")
+            and tax["country"] != jurisdiction.get("country")
+            or tax.get("region")
+            and tax["region"] != jurisdiction.get("region")
+        ):
             continue
-        tax_breakdown.append({"name": tax.get("name", "Tax"), "rate_percent": tax["rate_percent"], "amount": str(money(taxable * money(tax["rate_percent"]) / 100))})
+        tax_breakdown.append(
+            {
+                "name": tax.get("name", "Tax"),
+                "rate_percent": tax["rate_percent"],
+                "amount": str(money(taxable * money(tax["rate_percent"]) / 100)),
+            }
+        )
     tax_total = sum((money(tax["amount"]) for tax in tax_breakdown), Decimal(0))
-    return {"currency": currency, "plan_fee": str(plan_fee), "lines": resolved, "subtotal": str(subtotal), "discount_total": str(discount), "discount_rule_id": chosen.get("id") if chosen else None, "taxes": tax_breakdown, "tax_total": str(tax_total), "total": str(subtotal - discount + tax_total), "amount_paid": "0.00"}
+    return {
+        "currency": currency,
+        "plan_fee": str(plan_fee),
+        "lines": resolved,
+        "subtotal": str(subtotal),
+        "discount_total": str(discount),
+        "discount_rule_id": chosen.get("id") if chosen else None,
+        "taxes": tax_breakdown,
+        "tax_total": str(tax_total),
+        "total": str(subtotal - discount + tax_total),
+        "amount_paid": "0.00",
+    }

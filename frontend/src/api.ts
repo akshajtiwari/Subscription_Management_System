@@ -1,5 +1,17 @@
-export type User = { id: number; name: string; email: string; role: 'admin' | 'staff' | 'customer' };
-export type Row = { id: number; number?: string; name?: string; status?: string; version?: number; [key: string]: any };
+export type User = {
+  id: number;
+  name: string;
+  email: string;
+  role: 'admin' | 'staff' | 'customer';
+};
+export type Row = {
+  id: number;
+  number?: string;
+  name?: string;
+  status?: string;
+  version?: number;
+  [key: string]: any;
+};
 
 export async function request(path: string, token = '', options: RequestInit = {}) {
   const response = await fetch(`/api/v1/${path}`, {

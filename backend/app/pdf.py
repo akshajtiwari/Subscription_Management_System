@@ -11,7 +11,9 @@ def invoice_pdf(invoice: dict) -> bytes:
         f"Plan fee: {invoice['currency']} {invoice['plan_fee']}",
     ]
     for line in invoice.get("lines", []):
-        lines.append(f"{line.get('name', 'Product')} x {line['quantity']} at {line['unit_price']}: {invoice['currency']} {line['amount']}")
+        lines.append(
+            f"{line.get('name', 'Product')} x {line['quantity']} at {line['unit_price']}: {invoice['currency']} {line['amount']}"
+        )
     lines += [
         "",
         f"Subtotal: {invoice['currency']} {invoice['subtotal']}",
@@ -24,7 +26,13 @@ def invoice_pdf(invoice: dict) -> bytes:
     ]
     commands = ["BT /F1 11 Tf 50 780 Td 15 TL"]
     for index, line in enumerate(lines):
-        safe = line.encode("ascii", "replace").decode().replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        safe = (
+            line.encode("ascii", "replace")
+            .decode()
+            .replace("\\", "\\\\")
+            .replace("(", "\\(")
+            .replace(")", "\\)")
+        )
         commands.append(f"{'T* ' if index else ''}({safe[:110]}) Tj")
     commands.append("ET")
     stream = "\n".join(commands).encode("ascii")
@@ -44,5 +52,7 @@ def invoice_pdf(invoice: dict) -> bytes:
     result += f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode()
     for offset in offsets[1:]:
         result += f"{offset:010d} 00000 n \n".encode()
-    result += f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    result += (
+        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
     return bytes(result)

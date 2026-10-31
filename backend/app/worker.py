@@ -1,4 +1,5 @@
 """Daily fictional billing runner. Run as a separate process in a demo deployment."""
+
 import os
 import time
 from datetime import datetime, timezone

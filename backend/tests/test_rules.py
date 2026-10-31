@@ -12,7 +12,15 @@ def test_month_end_and_leap_day():
 def test_tax_discount_and_plan_fee():
     plan = {"price": "100.00", "currency": "USD"}
     lines = [{"unit_price": "20.00", "quantity": 2, "currency": "USD", "product_id": 1}]
-    discounts = [{"id": 1, "kind": "percentage", "value": "10", "starts_on": "2026-01-01", "scope": "subscription"}]
+    discounts = [
+        {
+            "id": 1,
+            "kind": "percentage",
+            "value": "10",
+            "starts_on": "2026-01-01",
+            "scope": "subscription",
+        }
+    ]
     taxes = [{"rate_percent": "5", "effective_from": "2026-01-01"}]
     result = invoice_amount(plan, lines, discounts, taxes, date(2026, 2, 1))
     assert result["subtotal"] == "140.00"
@@ -22,7 +30,10 @@ def test_tax_discount_and_plan_fee():
 
 
 def test_partial_payment_and_overpayment_boundary():
-    assert invoice_balance("120.00", ["25.00", "10.00"]) == {"amount_paid": "35.00", "amount_due": "85.00"}
+    assert invoice_balance("120.00", ["25.00", "10.00"]) == {
+        "amount_paid": "35.00",
+        "amount_due": "85.00",
+    }
     try:
         invoice_balance("120.00", ["120.01"])
     except ValueError as error:

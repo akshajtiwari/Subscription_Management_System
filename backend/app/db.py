@@ -29,7 +29,9 @@ class Record(Base):
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class Invoice(Base):
@@ -66,7 +68,9 @@ class Event(Base):
     action: Mapped[str] = mapped_column(String(60))
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class Idempotency(Base):
@@ -77,7 +81,11 @@ class Idempotency(Base):
 
 
 url = os.getenv("DATABASE_URL", "sqlite:///./brightloop.db")
-engine = create_engine(url, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {}, pool_pre_ping=True)
+engine = create_engine(
+    url,
+    connect_args={"check_same_thread": False} if url.startswith("sqlite") else {},
+    pool_pre_ping=True,
+)
 Session = sessionmaker(engine, expire_on_commit=False)
 
 
