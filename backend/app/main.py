@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, or_, cast, String
+from sqlalchemy import select, or_, cast, String, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DbSession
 
@@ -264,6 +264,8 @@ def record_view(session, record, user):
 
 
 def get_record(session, kind, record_id, user, lock=False):
+    if lock:
+        start_write(session)
     query = select(Record).where(Record.id == record_id)
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
@@ -291,6 +293,20 @@ def event(session, kind, record_id, action, actor_id=None, detail=None):
 def payload_fingerprint(action: str, body: dict):
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return f"{action}:{hashlib.sha256(canonical.encode()).hexdigest()}"
+
+
+def start_write(session):
+    if session.get_bind().dialect.name == "sqlite":
+        connection = session.connection()
+        if not connection.connection.driver_connection.in_transaction:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
+def mutation_lock(session, key):
+    start_write(session)
+    if session.get_bind().dialect.name == "postgresql":
+        identifier = int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big", signed=True)
+        session.execute(select(func.pg_advisory_xact_lock(identifier)))
 
 
 @app.post("/api/v1/auth/register", status_code=201)
@@ -349,6 +365,7 @@ def reset_request(body: ResetRequest, session: DbSession = Depends(db)):
 
 @app.post("/api/v1/auth/password-resets/confirm")
 def reset_confirm(body: ResetConfirmation, session: DbSession = Depends(db)):
+    start_write(session)
     if not valid_password(body.new_password):
         fail("password_rule")
     for entry in session.scalars(
@@ -764,6 +781,8 @@ def invoice_json(invoice, session):
 
 
 def get_invoice(session, invoice_id, user, lock=False):
+    if lock:
+        start_write(session)
     query = select(Invoice).where(Invoice.id == invoice_id)
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
@@ -782,6 +801,7 @@ def billing_run(
 ):
     allowed(user, "admin", "staff")
     key = f"billing:{user.id}:{idempotency_key}"
+    mutation_lock(session, key)
     fingerprint = payload_fingerprint("billing_run", body)
     previous = session.get(Idempotency, key)
     if previous:
@@ -1097,6 +1117,7 @@ def add_payment(
 ):
     allowed(user, "admin", "staff")
     key = f"payment:{user.id}:{invoice_id}:{idempotency_key}"
+    mutation_lock(session, key)
     fingerprint = payload_fingerprint("payment", body)
     previous = session.get(Idempotency, key)
     if previous:
@@ -1145,6 +1166,8 @@ def invoice_action(
 ):
     allowed(user, "admin", "staff")
     key = f"invoice:{invoice_id}:{action}:{user.id}:{idempotency_key}" if idempotency_key else None
+    if key:
+        mutation_lock(session, key)
     fingerprint = payload_fingerprint("invoice_action", {"action": action, "version": if_match})
     previous = session.get(Idempotency, key) if key else None
     if previous:
@@ -1583,6 +1606,8 @@ def decide_request(
     record_id: int, decision: str, user: User = Depends(current), session: DbSession = Depends(db)
 ):
     allowed(user, "admin", "staff")
+    request = get_record(session, "requests", record_id, user)
+    get_record(session, "subscriptions", request.payload["subscription_id"], user, lock=True)
     request = get_record(session, "requests", record_id, user, lock=True)
     if (
         decision not in {"approve", "reject"}
