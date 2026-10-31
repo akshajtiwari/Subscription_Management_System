@@ -386,9 +386,6 @@ legend {
 .password-rules li[data-valid='true'] {
   color: #3e5c46;
 }
-.auth-links .btn {
-  white-space: normal;
-}
 .currency-choice {
   display: flex;
   align-items: center;
