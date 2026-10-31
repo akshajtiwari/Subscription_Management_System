@@ -190,12 +190,15 @@ function App() {
             ? form
             : {
                 payload: Object.fromEntries(
-                  Object.entries(form).map(([key, value]) => [
-                    key,
-                    ['lines', 'variants', 'product_ids'].includes(key) && typeof value === 'string'
-                      ? JSON.parse(value)
-                      : value,
-                  ]),
+                  Object.entries(form)
+                    .filter(([key, value]) => (fields[route] || []).includes(key) && value !== '')
+                    .map(([key, value]) => [
+                      key,
+                      ['lines', 'variants', 'product_ids'].includes(key) &&
+                      typeof value === 'string'
+                        ? JSON.parse(value)
+                        : value,
+                    ]),
                 ),
               },
         ),
