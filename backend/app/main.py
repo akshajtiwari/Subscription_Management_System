@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DbSession
 
 from .db import Event, Idempotency, Invoice, Payment, Record, Session, User, init_db
-from .rules import invoice_amount, money, next_date
+from .rules import invoice_amount, invoice_balance, money, next_date
 from .pdf import invoice_pdf
 
 app = FastAPI(title="Brightloop demo API", version="1.0")
@@ -256,8 +256,9 @@ def resolved_subscription(session, payload):
 
 def invoice_json(invoice, session):
     payments = list(session.scalars(select(Payment).where(Payment.invoice_id == invoice.id)))
-    paid = sum((money(p.amount) for p in payments), Decimal(0))
-    due = money(invoice.snapshot["total"]) - paid if invoice.status != "canceled" else Decimal(0)
+    balance = invoice_balance(invoice.snapshot["total"], [p.amount for p in payments])
+    paid = money(balance["amount_paid"])
+    due = money(balance["amount_due"]) if invoice.status != "canceled" else Decimal(0)
     return {"id": invoice.id, "number": invoice.number, "subscription_id": invoice.subscription_id, "customer_id": invoice.customer_id, "period_start": invoice.period_start, "period_end": invoice.period_end, "due_on": invoice.due_on, "status": invoice.status, "overdue": invoice.status == "confirmed" and due > 0 and invoice.due_on < date.today().isoformat(), "version": invoice.version, **invoice.snapshot, "amount_paid": str(paid), "amount_due": str(due), "payments": [{"id": p.id, "amount": p.amount, "method": p.method, "paid_at": p.paid_at, "note": p.note} for p in payments]}
 
 
@@ -277,28 +278,52 @@ def billing_run(body: dict, idempotency_key: str = Header(...), user: User = Dep
         return previous.result
     due_on = date.fromisoformat(body["due_on"])
     counts = {"created_count": 0, "skipped_count": 0, "failed_count": 0, "failures": []}
-    for subscription in session.scalars(select(Record).where(Record.kind == "subscriptions", Record.status == "active")):
+    for subscription in session.scalars(select(Record).where(Record.kind == "subscriptions", Record.status == "active").with_for_update()):
         try:
             plan = get_record(session, "plans", subscription.payload["plan_id"], user).payload
             next_on = date.fromisoformat(subscription.payload.get("next_billing_date", subscription.payload["start_date"]))
             if next_on > due_on:
                 counts["skipped_count"] += 1
                 continue
-            end = next_date(next_on, plan["billing_interval"])
-            existing = session.scalar(select(Invoice).where(Invoice.subscription_id == subscription.id, Invoice.period_start == next_on.isoformat(), Invoice.period_end == end.isoformat()))
-            if existing:
-                counts["skipped_count"] += 1
-                continue
-            lines = subscription.payload["lines"]
-            discounts = [r.payload | {"id": r.id} for r in session.scalars(select(Record).where(Record.kind == "discount-rules"))]
-            taxes = [r.payload for r in session.scalars(select(Record).where(Record.kind == "tax-rules"))]
-            snapshot = invoice_amount(plan, lines, discounts, taxes, next_on)
-            invoice = Invoice(number=f"INV-{secrets.token_hex(5).upper()}", subscription_id=subscription.id, customer_id=subscription.owner_id, period_start=next_on.isoformat(), period_end=end.isoformat(), due_on=(next_on + timedelta(days=int(subscription.payload.get("payment_terms_days", 14)))).isoformat(), snapshot=snapshot)
-            session.add(invoice)
-            subscription.payload = {**subscription.payload, "next_billing_date": end.isoformat()}
-            session.flush()
-            event(session, "invoices", invoice.id, "created", user.id)
-            counts["created_count"] += 1
+            cycles = 0
+            while next_on <= due_on and cycles < 400:
+                cycles += 1
+                expiry = date.fromisoformat(subscription.payload["expiry_date"])
+                if next_on >= expiry:
+                    if plan.get("auto_close"):
+                        subscription.status = "closed"
+                        event(session, "subscriptions", subscription.id, "auto_closed")
+                        counts["skipped_count"] += 1
+                        break
+                    if plan.get("allow_renewal"):
+                        subscription.payload = {**subscription.payload, "expiry_date": next_date(expiry, plan["billing_interval"]).isoformat()}
+                        event(session, "subscriptions", subscription.id, "auto_renewed")
+                    else:
+                        subscription.status = "awaiting_renewal"
+                        event(session, "subscriptions", subscription.id, "awaiting_renewal")
+                        counts["skipped_count"] += 1
+                        break
+                anchor_day = int(subscription.payload.get("billing_anchor_day", date.fromisoformat(subscription.payload["start_date"]).day))
+                end = next_date(next_on, plan["billing_interval"], anchor_day)
+                existing = session.scalar(select(Invoice).where(Invoice.subscription_id == subscription.id, Invoice.period_start == next_on.isoformat(), Invoice.period_end == end.isoformat()))
+                if existing:
+                    counts["skipped_count"] += 1
+                    next_on = end
+                    continue
+                lines = subscription.payload["lines"]
+                discounts = [r.payload | {"id": r.id} for r in session.scalars(select(Record).where(Record.kind == "discount-rules"))]
+                taxes = [r.payload for r in session.scalars(select(Record).where(Record.kind == "tax-rules"))]
+                snapshot = invoice_amount(plan, lines, discounts, taxes, next_on)
+                invoice = Invoice(number=f"INV-{secrets.token_hex(5).upper()}", subscription_id=subscription.id, customer_id=subscription.owner_id, period_start=next_on.isoformat(), period_end=end.isoformat(), due_on=(next_on + timedelta(days=int(subscription.payload.get("payment_terms_days", 14)))).isoformat(), snapshot=snapshot)
+                session.add(invoice)
+                session.flush()
+                event(session, "invoices", invoice.id, "created", user.id)
+                counts["created_count"] += 1
+                next_on = end
+            subscription.payload = {**subscription.payload, "next_billing_date": next_on.isoformat()}
+            if cycles == 400 and next_on <= due_on:
+                counts["failed_count"] += 1
+                counts["failures"].append({"subscription_id": subscription.id, "reason": "too_many_periods"})
         except (KeyError, ValueError) as exc:
             counts["failed_count"] += 1
             counts["failures"].append({"subscription_id": subscription.id, "reason": str(exc)})
@@ -376,8 +401,19 @@ def invoice_action(invoice_id: int, action: str, if_match: str | None = Header(N
     invoice = get_invoice(session, invoice_id, user)
     check_version(invoice.version, if_match)
     if action == "confirm" and invoice.status == "draft":
+        rule_id = invoice.snapshot.get("discount_rule_id")
+        if rule_id:
+            rule = get_record(session, "discount-rules", rule_id, user)
+            used = int(rule.payload.get("usage_count", 0))
+            limit = rule.payload.get("usage_limit")
+            if limit is not None and used >= int(limit):
+                fail("discount_exhausted", 409)
+            rule.payload = {**rule.payload, "usage_count": used + 1}
         invoice.status = "confirmed"
     elif action == "cancel" and invoice.status in {"draft", "confirmed"} and not invoice_json(invoice, session)["payments"]:
+        if invoice.status == "confirmed" and invoice.snapshot.get("discount_rule_id"):
+            rule = get_record(session, "discount-rules", invoice.snapshot["discount_rule_id"], user)
+            rule.payload = {**rule.payload, "usage_count": max(0, int(rule.payload.get("usage_count", 0)) - 1)}
         invoice.status = "canceled"
     elif action == "send" and invoice.status == "confirmed":
         event(session, "outbox", invoice.id, "invoice_send", user.id)
@@ -495,12 +531,13 @@ def subscription_action(record_id: int, action: str, if_match: str | None = Head
     record = get_record(session, "subscriptions", record_id, user)
     check_version(record.version, if_match)
     if action == "renew":
-        if record.status != "active":
+        if record.status not in {"active", "awaiting_renewal"}:
             fail("invalid_transition", 409)
         plan = get_record(session, "plans", record.payload["plan_id"], user)
         if not plan.payload.get("allow_renewal"):
             fail("plan_disallows_renewal", 409)
         record.payload = {**record.payload, "expiry_date": next_date(date.fromisoformat(record.payload["expiry_date"]), plan.payload["billing_interval"]).isoformat()}
+        record.status = "active"
     else:
         transition = TRANSITIONS.get(action)
         if not transition or record.status != transition[0]:

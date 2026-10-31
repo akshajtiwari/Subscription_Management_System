@@ -7,14 +7,22 @@ def money(value):
     return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def next_date(start: date, interval: str):
+def next_date(start: date, interval: str, anchor_day: int | None = None):
     if interval == "daily":
         return start + timedelta(days=1)
     if interval == "weekly":
         return start + timedelta(days=7)
     year = start.year + (start.month == 12 if interval == "monthly" else 1)
     month = start.month % 12 + 1 if interval == "monthly" else start.month
-    return date(year, month, min(start.day, calendar.monthrange(year, month)[1]))
+    return date(year, month, min(anchor_day or start.day, calendar.monthrange(year, month)[1]))
+
+
+def invoice_balance(total, payments):
+    paid = sum((money(amount) for amount in payments), Decimal(0))
+    due = money(total) - paid
+    if due < 0:
+        raise ValueError("payment_exceeds_total")
+    return {"amount_paid": str(paid), "amount_due": str(due)}
 
 
 def invoice_amount(plan, lines, discounts, taxes, on: date):
