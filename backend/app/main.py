@@ -312,6 +312,23 @@ def mutation_lock(session, key):
         session.execute(select(func.pg_advisory_xact_lock(identifier)))
 
 
+def replay_result(session, key, fingerprint):
+    if not key:
+        return None
+    mutation_lock(session, key)
+    previous = session.get(Idempotency, key)
+    if previous:
+        if previous.action != fingerprint:
+            fail("idempotency_conflict", 409)
+        return previous.result
+    return None
+
+
+def remember_result(session, key, fingerprint, result):
+    if key:
+        session.add(Idempotency(key=key, action=fingerprint, result=result))
+
+
 @app.post("/api/v1/auth/register", status_code=201)
 def register(body: Credentials, session: DbSession = Depends(db)):
     if not body.name.strip():
@@ -1417,7 +1434,11 @@ def my_subscription(
 
 @app.post("/api/v1/{kind}", status_code=201)
 def create_record(
-    kind: str, body: Payload, user: User = Depends(current), session: DbSession = Depends(db)
+    kind: str,
+    body: Payload,
+    idempotency_key: str | None = Header(None, max_length=100),
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
 ):
     if kind not in KINDS:
         fail("not_found", 404)
@@ -1426,6 +1447,11 @@ def create_record(
     allowed(
         user, "admin" if kind in ADMIN_ONLY else "admin", *([] if kind in ADMIN_ONLY else ["staff"])
     )
+    key = f"create:{kind}:{user.id}:{idempotency_key}" if idempotency_key else None
+    fingerprint = payload_fingerprint(kind, body.payload)
+    previous = replay_result(session, key, fingerprint)
+    if previous is not None:
+        return previous
     payload = parse_record(kind, body.payload)
     validate_references(session, kind, payload, user)
     if kind == "subscriptions":
@@ -1445,8 +1471,10 @@ def create_record(
     session.add(record)
     session.flush()
     event(session, kind, record.id, "created", user.id)
+    result = record_view(session, record, user)
+    remember_result(session, key, fingerprint, result)
     session.commit()
-    return record_view(session, record, user)
+    return result
 
 
 @app.get("/api/v1/{kind}/{record_id}")
@@ -1512,10 +1540,20 @@ def subscription_action(
     record_id: int,
     action: str,
     if_match: str | None = Header(None),
+    idempotency_key: str | None = Header(None, max_length=100),
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
     allowed(user, "admin", "staff")
+    key = (
+        f"subscription:{record_id}:{action}:{user.id}:{idempotency_key}"
+        if idempotency_key
+        else None
+    )
+    fingerprint = payload_fingerprint(action, {"version": if_match})
+    previous = replay_result(session, key, fingerprint)
+    if previous is not None:
+        return previous
     record = get_record(session, "subscriptions", record_id, user, lock=True)
     check_version(record.version, if_match)
     plan = session.get(Record, record.payload["plan_id"])
@@ -1547,8 +1585,10 @@ def subscription_action(
     record.payload = payload
     record.version += 1
     event(session, "subscriptions", record.id, action, user.id)
+    result = record_view(session, record, user)
+    remember_result(session, key, fingerprint, result)
     session.commit()
-    return record_view(session, record, user)
+    return result
 
 
 @app.get("/api/v1/subscriptions/{record_id}/history")
@@ -1577,10 +1617,16 @@ def subscription_history(
 def customer_request(
     record_id: int,
     body: CustomerChange,
+    idempotency_key: str | None = Header(None, max_length=100),
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
     allowed(user, "customer")
+    key = f"request:{record_id}:{user.id}:{idempotency_key}" if idempotency_key else None
+    fingerprint = payload_fingerprint("customer_change", body.model_dump(mode="json"))
+    previous = replay_result(session, key, fingerprint)
+    if previous is not None:
+        return previous
     subscription = get_record(session, "subscriptions", record_id, user, lock=True)
     if body.action not in record_view(session, subscription, user)["available_actions"]:
         fail("action_unavailable", 409)
@@ -1611,8 +1657,10 @@ def customer_request(
     session.add(request)
     session.flush()
     event(session, "requests", request.id, "requested", user.id)
+    result = record_json(request)
+    remember_result(session, key, fingerprint, result)
     session.commit()
-    return record_json(request)
+    return result
 
 
 @app.post("/api/v1/requests/{record_id}/{decision}")
