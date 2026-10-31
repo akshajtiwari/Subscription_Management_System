@@ -6,15 +6,16 @@ import json
 import os
 import re
 import secrets
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, or_, cast, String
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DbSession
 
@@ -30,9 +31,16 @@ from .rules import (
     subscription_actions,
 )
 from .pdf import invoice_pdf
-from .schemas import CustomerChange, PaymentInput, SCHEMAS, parse_record
+from .schemas import AccountUpdate, StaffUpdate, CustomerChange, PaymentInput, SCHEMAS, parse_record
 
-app = FastAPI(title="Brightloop demo API", version="1.0")
+
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Brightloop demo API", version="1.0", lifespan=lifespan)
 
 
 @app.exception_handler(ValidationError)
@@ -89,11 +97,6 @@ class Payload(BaseModel):
 def db():
     with Session() as session:
         yield session
-
-
-@app.on_event("startup")
-def startup():
-    init_db()
 
 
 def fail(code: str, status=422):
@@ -183,6 +186,33 @@ def pending_request(session, record_id):
 
 def record_view(session, record, user):
     result = record_json(record)
+    if record.kind == "quotation-templates":
+        plan = session.get(Record, record.payload["plan_id"])
+        lines = []
+        for line in record.payload["lines"]:
+            product = session.get(Record, line["product_id"])
+            variant_id = line.get("variant_id")
+            variants = product.payload.get("variants", []) if product else []
+            variant = (
+                variants[variant_id]
+                if variant_id is not None and variant_id < len(variants)
+                else {}
+            )
+            lines.append(
+                {
+                    **line,
+                    "name": product.payload.get("name") if product else "Unavailable product",
+                    "variant_name": variant.get("name"),
+                    "unit_price": str(
+                        money(product.payload["sales_price"], product.payload["currency"])
+                        + money(variant.get("price_adjustment", 0), product.payload["currency"])
+                    )
+                    if product
+                    else "0",
+                    "currency": product.payload["currency"] if product else "USD",
+                }
+            )
+        return {**result, "plan": record_json(plan) if plan else None, "lines": lines}
     if record.kind != "subscriptions":
         return result
     plan = session.get(Record, record.payload["plan_id"])
@@ -195,9 +225,15 @@ def record_view(session, record, user):
         actions = []
     return {
         **result,
-        "plan": {"id": plan.id, **plan.payload},
+        "plan": {
+            "id": plan.id,
+            **plan.payload,
+            "price": record.payload.get("plan_price", plan.payload["price"]),
+            "currency": record.payload.get("currency", plan.payload["currency"]),
+        },
         "available_actions": actions,
         "pending_request": record_json(pending) if pending else None,
+        "customer": public_user(session.get(User, record.owner_id)),
     }
 
 
@@ -310,9 +346,18 @@ def me(user: User = Depends(current)):
     return public_user(user)
 
 
+@app.patch("/api/v1/me")
+def update_account(
+    body: AccountUpdate, user: User = Depends(current), session: DbSession = Depends(db)
+):
+    user.name = body.name
+    session.commit()
+    return public_user(user)
+
+
 @app.get("/api/v1/outbox")
 def outbox(user: User = Depends(current), session: DbSession = Depends(db)):
-    allowed(user, "admin", "staff")
+    allowed(user, "admin")
     return {
         "data": [
             {"id": e.id, "action": e.action, "record_id": e.record_id, "detail": e.detail}
@@ -323,12 +368,30 @@ def outbox(user: User = Depends(current), session: DbSession = Depends(db)):
     }
 
 
-@app.get("/api/v1/staff")
-def staff(user: User = Depends(current), session: DbSession = Depends(db)):
-    allowed(user, "admin")
+def people_page(session, role, search, limit, cursor, active=None):
+    query = select(User).where(User.role == role, User.id > cursor).order_by(User.id)
+    if search:
+        query = query.where(or_(User.name.ilike(f"%{search}%"), User.email.ilike(f"%{search}%")))
+    if active is not None:
+        query = query.where(User.active == active)
+    rows = list(session.scalars(query.limit(limit + 1)))
     return {
-        "data": [public_user(x) for x in session.scalars(select(User).where(User.role == "staff"))]
+        "data": [public_user(row) for row in rows[:limit]],
+        "next_cursor": rows[limit - 1].id if len(rows) > limit else None,
     }
+
+
+@app.get("/api/v1/staff")
+def staff(
+    search: str = "",
+    limit: int = Query(25, ge=1, le=100),
+    cursor: int = Query(0, ge=0),
+    active: bool | None = None,
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
+):
+    allowed(user, "admin")
+    return people_page(session, "staff", search, limit, cursor, active)
 
 
 @app.post("/api/v1/staff", status_code=201)
@@ -351,13 +414,63 @@ def add_staff(body: Credentials, user: User = Depends(current), session: DbSessi
     return public_user(staff_user)
 
 
+@app.patch("/api/v1/staff/{staff_id}")
+def update_staff(
+    staff_id: int,
+    body: StaffUpdate,
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
+):
+    allowed(user, "admin")
+    member = session.get(User, staff_id)
+    if not member or member.role != "staff":
+        fail("not_found", 404)
+    for key, value in body.model_dump(exclude_none=True).items():
+        setattr(member, key, value)
+    session.commit()
+    return public_user(member)
+
+
 @app.get("/api/v1/customers")
-def customers(user: User = Depends(current), session: DbSession = Depends(db)):
+def customers(
+    search: str = "",
+    limit: int = Query(25, ge=1, le=100),
+    cursor: int = Query(0, ge=0),
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
+):
     allowed(user, "admin", "staff")
+    return people_page(session, "customer", search, limit, cursor)
+
+
+@app.get("/api/v1/customers/{customer_id}")
+def customer_detail(
+    customer_id: int, user: User = Depends(current), session: DbSession = Depends(db)
+):
+    allowed(user, "admin", "staff")
+    customer = session.get(User, customer_id)
+    if not customer or customer.role != "customer":
+        fail("not_found", 404)
+    subscriptions = list(
+        session.scalars(
+            select(Record)
+            .where(Record.kind == "subscriptions", Record.owner_id == customer_id)
+            .order_by(Record.id.desc())
+            .limit(10)
+        )
+    )
+    invoices = list(
+        session.scalars(
+            select(Invoice)
+            .where(Invoice.customer_id == customer_id)
+            .order_by(Invoice.id.desc())
+            .limit(10)
+        )
+    )
     return {
-        "data": [
-            public_user(x) for x in session.scalars(select(User).where(User.role == "customer"))
-        ]
+        **public_user(customer),
+        "subscriptions": [record_view(session, row, user) for row in subscriptions],
+        "invoices": [invoice_json(row, session) for row in invoices],
     }
 
 
@@ -449,14 +562,14 @@ def resolve_lines(session, selections, currency):
 
 
 def resolved_subscription(session, payload):
-    if payload.get("template_id") and not payload.get("lines"):
+    if payload.get("template_id"):
         template = session.get(Record, payload["template_id"])
         if not template or template.kind != "quotation-templates" or template.status != "active":
             fail("template_unavailable")
         payload = {
             **payload,
             "plan_id": payload.get("plan_id") or template.payload.get("plan_id"),
-            "lines": template.payload.get("lines", []),
+            "lines": payload.get("lines") or template.payload.get("lines", []),
             "validity_days": template.payload.get("validity_days", 30),
         }
     customer = session.get(User, payload.get("customer_id"))
@@ -492,6 +605,7 @@ def resolved_subscription(session, payload):
         **payload,
         "lines": lines,
         "currency": currency,
+        "plan_price": plan.payload["price"],
         "next_billing_date": payload["start_date"],
         **term_length(
             date.fromisoformat(payload["start_date"]), date.fromisoformat(payload["expiry_date"])
@@ -529,9 +643,18 @@ def invoice_json(invoice, session):
     due = (
         money(balance["amount_due"], invoice.snapshot["currency"])
         if invoice.status != "canceled"
-        else Decimal(0)
+        else money(0, invoice.snapshot["currency"])
+    )
+    customer = session.get(User, invoice.customer_id)
+    actions = (
+        ["confirm", "cancel"]
+        if invoice.status == "draft"
+        else (["send"] + (["cancel"] if not payments else []))
+        if invoice.status == "confirmed"
+        else []
     )
     return {
+        **invoice.snapshot,
         "id": invoice.id,
         "number": invoice.number,
         "subscription_id": invoice.subscription_id,
@@ -542,9 +665,15 @@ def invoice_json(invoice, session):
         "status": invoice.status,
         "overdue": invoice.status == "confirmed"
         and due > 0
-        and invoice.due_on < date.today().isoformat(),
+        and invoice.due_on
+        < datetime.now(ZoneInfo(invoice.snapshot.get("billing_timezone", "UTC")))
+        .date()
+        .isoformat(),
         "version": invoice.version,
-        **invoice.snapshot,
+        "customer": invoice.snapshot.get(
+            "customer", {"id": customer.id, "name": customer.name, "email": customer.email}
+        ),
+        "available_actions": actions,
         "amount_paid": str(paid),
         "amount_due": str(due),
         "payments": [
@@ -560,8 +689,11 @@ def invoice_json(invoice, session):
     }
 
 
-def get_invoice(session, invoice_id, user):
-    invoice = session.get(Invoice, invoice_id)
+def get_invoice(session, invoice_id, user, lock=False):
+    query = select(Invoice).where(Invoice.id == invoice_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    invoice = session.scalar(query)
     if not invoice or user.role == "customer" and invoice.customer_id != user.id:
         fail("not_found", 404)
     return invoice
@@ -668,7 +800,11 @@ def billing_run(
         if subscription.id in failed_subscriptions:
             continue
         try:
-            plan = get_record(session, "plans", subscription.payload["plan_id"], user).payload
+            plan = get_record(
+                session, "plans", subscription.payload["plan_id"], user
+            ).payload.copy()
+            plan["price"] = subscription.payload.get("plan_price", plan["price"])
+            plan["currency"] = subscription.payload["currency"]
             next_on = date.fromisoformat(
                 subscription.payload.get("next_billing_date", subscription.payload["start_date"])
             )
@@ -737,6 +873,13 @@ def billing_run(
                         "region": subscription.payload.get("billing_region"),
                     },
                 )
+                customer = session.get(User, subscription.owner_id)
+                snapshot = {
+                    **snapshot,
+                    "customer": {"id": customer.id, "name": customer.name, "email": customer.email},
+                    "plan_name": plan.get("name", "Plan"),
+                    "billing_timezone": subscription.payload.get("billing_timezone", "UTC"),
+                }
                 invoice = Invoice(
                     number=f"INV-{secrets.token_hex(5).upper()}",
                     subscription_id=subscription.id,
@@ -782,17 +925,53 @@ def billing_run(
 
 
 @app.get("/api/v1/invoices")
-def invoices(user: User = Depends(current), session: DbSession = Depends(db)):
-    query = select(Invoice).order_by(Invoice.id.desc()).limit(100)
+def invoices(
+    search: str = "",
+    status: str = "",
+    overdue: bool = False,
+    start: str = "",
+    end: str = "",
+    limit: int = Query(25, ge=1, le=100),
+    cursor: int = Query(0, ge=0),
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
+):
+    query = select(Invoice).join(User, User.id == Invoice.customer_id).order_by(Invoice.id.desc())
+    if cursor:
+        query = query.where(Invoice.id < cursor)
     if user.role == "customer":
         query = query.where(Invoice.customer_id == user.id)
-    return {"data": [invoice_json(x, session) for x in session.scalars(query)]}
+    if search:
+        query = query.where(
+            or_(
+                Invoice.number.ilike(f"%{search}%"),
+                User.name.ilike(f"%{search}%"),
+                User.email.ilike(f"%{search}%"),
+            )
+        )
+    if status:
+        if status not in {"draft", "confirmed", "paid", "canceled"}:
+            fail("invalid_status")
+        query = query.where(Invoice.status == status)
+    if overdue:
+        query = query.where(
+            Invoice.status == "confirmed", Invoice.due_on < date.today().isoformat()
+        )
+    if start:
+        query = query.where(Invoice.due_on >= start)
+    if end:
+        query = query.where(Invoice.due_on <= end)
+    rows = list(session.scalars(query.limit(limit + 1)))
+    return {
+        "data": [invoice_json(row, session) for row in rows[:limit]],
+        "next_cursor": rows[limit - 1].id if len(rows) > limit else None,
+    }
 
 
 @app.get("/api/v1/me/invoices")
 def my_invoices(user: User = Depends(current), session: DbSession = Depends(db)):
     allowed(user, "customer")
-    return invoices(user, session)
+    return invoices(user=user, session=session, limit=25, cursor=0)
 
 
 @app.get("/api/v1/me/invoices/{invoice_id}")
@@ -840,7 +1019,7 @@ def add_payment(
             fail("idempotency_conflict", 409)
         return previous.result
     body = PaymentInput.model_validate(body).model_dump(mode="json")
-    invoice = get_invoice(session, invoice_id, user)
+    invoice = get_invoice(session, invoice_id, user, lock=True)
     current_invoice = invoice_json(invoice, session)
     amount = money(body.get("amount", "0"), body["currency"])
     if (
@@ -879,12 +1058,12 @@ def invoice_action(
     session: DbSession = Depends(db),
 ):
     allowed(user, "admin", "staff")
-    invoice = get_invoice(session, invoice_id, user)
+    invoice = get_invoice(session, invoice_id, user, lock=True)
     check_version(invoice.version, if_match)
     if action == "confirm" and invoice.status == "draft":
         rule_id = invoice.snapshot.get("discount_rule_id")
         if rule_id:
-            rule = get_record(session, "discount-rules", rule_id, user)
+            rule = get_record(session, "discount-rules", rule_id, user, lock=True)
             used = int(rule.payload.get("usage_count", 0))
             limit = rule.payload.get("usage_limit")
             if limit is not None and used >= int(limit):
@@ -1019,8 +1198,8 @@ def list_records(
     kind: str,
     search: str = "",
     status: str = "",
-    limit: int = 25,
-    cursor: int = 0,
+    limit: int = Query(25, ge=1, le=100),
+    cursor: int = Query(0, ge=0),
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
@@ -1038,9 +1217,15 @@ def list_records(
         query = query.where(Record.owner_id == user.id)
     if status:
         query = query.where(Record.status == status)
-    records = list(session.scalars(query))
     if search:
-        records = [x for x in records if search.lower() in str(record_json(x)).lower()]
+        query = query.outerjoin(User, User.id == Record.owner_id).where(
+            or_(
+                Record.number.ilike(f"%{search}%"),
+                cast(Record.payload, String).ilike(f"%{search}%"),
+                User.name.ilike(f"%{search}%"),
+            )
+        )
+    records = list(session.scalars(query))
     return {
         "data": [record_view(session, x, user) for x in records[:limit]],
         "next_cursor": records[limit - 1].id if len(records) > limit else None,
@@ -1136,6 +1321,12 @@ def update_record(
     if extra_fields:
         fail("unknown_fields")
     usage_count = int(record.payload.get("usage_count", 0))
+    if (
+        kind == "products"
+        and "variants" in body.payload
+        and len(body.payload["variants"]) < len(record.payload.get("variants", []))
+    ):
+        fail("deactivate_variants_instead", 409)
     merged = parse_record(
         kind,
         {**{key: value for key, value in record.payload.items() if key in fields}, **body.payload},

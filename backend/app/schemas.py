@@ -226,3 +226,12 @@ class CustomerChange(Input):
         if self.action != "add_on" and (self.product_id is not None or self.variant_id is not None):
             raise ValueError("unexpected_product")
         return self
+
+
+class StaffUpdate(Input):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    active: bool | None = None
+
+
+class AccountUpdate(Input):
+    name: str = Field(min_length=1, max_length=160)
