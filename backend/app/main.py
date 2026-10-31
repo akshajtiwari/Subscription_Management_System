@@ -1,6 +1,7 @@
 """Persistent fictional Brightloop workflows. No external delivery or money movement."""
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -112,6 +113,11 @@ def check_version(version, if_match):
 
 def event(session, kind, record_id, action, actor_id=None, detail=None):
     session.add(Event(kind=kind, record_id=record_id, action=action, actor_id=actor_id, detail=detail or {}))
+
+
+def payload_fingerprint(action: str, body: dict):
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return f"{action}:{hashlib.sha256(canonical.encode()).hexdigest()}"
 
 
 @app.post("/api/v1/auth/register", status_code=201)
@@ -278,8 +284,11 @@ def get_invoice(session, invoice_id, user):
 def billing_run(body: dict, idempotency_key: str = Header(...), user: User = Depends(current), session: DbSession = Depends(db)):
     allowed(user, "admin", "staff")
     key = f"billing:{user.id}:{idempotency_key}"
+    fingerprint = payload_fingerprint("billing_run", body)
     previous = session.get(Idempotency, key)
     if previous:
+        if previous.action != fingerprint:
+            fail("idempotency_conflict", 409)
         return previous.result
     due_on = date.fromisoformat(body["due_on"])
     counts = {"created_count": 0, "skipped_count": 0, "failed_count": 0, "failures": []}
@@ -356,7 +365,7 @@ def billing_run(body: dict, idempotency_key: str = Header(...), user: User = Dep
     session.add(run)
     session.flush()
     result = record_json(run)
-    session.add(Idempotency(key=key, action="billing_run", result=result))
+    session.add(Idempotency(key=key, action=fingerprint, result=result))
     session.commit()
     return result
 
@@ -399,8 +408,11 @@ def download_invoice(invoice_id: int, user: User = Depends(current), session: Db
 def add_payment(invoice_id: int, body: dict, idempotency_key: str = Header(...), user: User = Depends(current), session: DbSession = Depends(db)):
     allowed(user, "admin", "staff")
     key = f"payment:{user.id}:{invoice_id}:{idempotency_key}"
+    fingerprint = payload_fingerprint("payment", body)
     previous = session.get(Idempotency, key)
     if previous:
+        if previous.action != fingerprint:
+            fail("idempotency_conflict", 409)
         return previous.result
     invoice = get_invoice(session, invoice_id, user)
     current_invoice = invoice_json(invoice, session)
@@ -414,7 +426,7 @@ def add_payment(invoice_id: int, body: dict, idempotency_key: str = Header(...),
         invoice.status = "paid"
     invoice.version += 1
     result = invoice_json(invoice, session)
-    session.add(Idempotency(key=key, action="payment", result=result))
+    session.add(Idempotency(key=key, action=fingerprint, result=result))
     event(session, "payments", payment.id, "recorded", user.id)
     session.commit()
     return result

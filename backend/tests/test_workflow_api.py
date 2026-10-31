@@ -55,6 +55,7 @@ def test_signup_to_partial_payment_and_repeat_billing():
         assert first.json()["created_count"] == 1
         repeated = client.post("/api/v1/billing-runs", json={"due_on": today.isoformat()}, headers=run_headers)
         assert repeated.json()["id"] == first.json()["id"]
+        assert client.post("/api/v1/billing-runs", json={"due_on": (today + timedelta(days=1)).isoformat()}, headers=run_headers).status_code == 409
         invoices = client.get("/api/v1/invoices", headers=admin_headers).json()["data"]
         assert len(invoices) == 1
         invoice = invoices[0]
@@ -64,6 +65,7 @@ def test_signup_to_partial_payment_and_repeat_billing():
         payment = client.post(f"/api/v1/invoices/{invoice['id']}/payments", json={"amount": "40.00", "currency": "USD", "method": "bank_transfer"}, headers={**admin_headers, "Idempotency-Key": "payment-1"})
         assert payment.status_code == 201
         assert payment.json()["amount_due"] == "100.00"
+        assert client.post(f"/api/v1/invoices/{invoice['id']}/payments", json={"amount": "41.00", "currency": "USD", "method": "bank_transfer"}, headers={**admin_headers, "Idempotency-Key": "payment-1"}).status_code == 409
         assert client.get(f"/api/v1/invoices/{invoice['id']}/pdf", headers=customer_headers).content.startswith(b"%PDF")
     finally:
         app.dependency_overrides.clear()
