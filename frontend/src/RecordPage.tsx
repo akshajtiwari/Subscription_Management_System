@@ -270,6 +270,12 @@ export function RecordPage(props: ComponentProps<typeof Detail> & { onBack: () =
                 <section className="panel scheduled-change">
                   <strong>{label(row.pending_request.action)} requested</strong>
                   <Status value={row.pending_request.status} />
+                  <button
+                    className="btn"
+                    onClick={() => onOpen('requests', row.pending_request.id)}
+                  >
+                    Review request
+                  </button>
                 </section>
               )}
             </div>
@@ -296,8 +302,34 @@ export function RecordPage(props: ComponentProps<typeof Detail> & { onBack: () =
                 <div className="timeline history">
                   {history.map((entry, index) => (
                     <div key={index}>
-                      <strong>{label(entry.action)}</strong>
-                      <small>{day(entry.created_at)}</small>
+                      <strong>
+                        {(
+                          {
+                            created: 'Draft',
+                            quote: 'Quotation',
+                            confirm: 'Confirmed',
+                            activate: 'Active',
+                            pause: 'Paused',
+                            resume: 'Active',
+                            renew: 'Renewed',
+                            close: 'Closed',
+                          } as Record<string, string>
+                        )[entry.action] || label(entry.action)}
+                      </strong>
+                      <small>
+                        <time dateTime={entry.created_at} title={`${entry.created_at} UTC`}>
+                          {(
+                            {
+                              created: 'Created',
+                              quote: 'Sent',
+                              confirm: 'Confirmed',
+                              activate: 'Activated',
+                            } as Record<string, string>
+                          )[entry.action] || label(entry.action)}
+                          {entry.actor_name ? ` by ${entry.actor_name}` : ''} ·{' '}
+                          {day(entry.created_at)}
+                        </time>
+                      </small>
                     </div>
                   ))}
                 </div>

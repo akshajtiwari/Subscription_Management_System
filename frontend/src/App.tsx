@@ -4,38 +4,28 @@ import { request, downloadInvoice, type Row, type User } from './api';
 import { BillingDialog, ChangeDialog, PaymentDialog, Review, type Command } from './Actions';
 import { Editor } from './Editor';
 import { Reports } from './Reports';
-import {
-  Dialog,
-  Empty,
-  ErrorBox,
-  Field,
-  Loading,
-  SearchInput,
-  Status,
-  amount,
-  day,
-  label,
-} from './ui';
+import { Empty, ErrorBox, Field, Loading, SearchInput, Status, amount, day, label } from './ui';
 import { Icon } from './Icon';
 import { Overview } from './Overview';
 import { RecordPage } from './RecordPage';
+import { Notes } from './Notes';
 
 const resources = [
   { id: 'overview', title: 'Overview', group: 'Billing operations', icon: 'grid' },
   { id: 'customers', title: 'Customers', group: 'Billing operations', icon: 'users' },
   { id: 'subscriptions', title: 'Subscriptions', group: 'Billing operations', icon: 'repeat' },
-  { id: 'invoices', title: 'Invoices', group: 'Billing operations', icon: 'file' },
+  { id: 'invoices', title: 'Invoices', group: 'Billing operations', icon: 'receipt' },
   { id: 'payments', title: 'Payments', group: 'Billing operations', icon: 'card' },
   { id: 'billing-runs', title: 'Billing runs', group: 'Billing operations', icon: 'repeat' },
   { id: 'reports', title: 'Reports', group: 'Billing operations', icon: 'chart' },
   { id: 'requests', title: 'Customer requests', group: 'Billing operations', icon: 'file' },
   { id: 'products', title: 'Products', group: 'Catalog & pricing', icon: 'box' },
   { id: 'plans', title: 'Plans', group: 'Catalog & pricing', icon: 'calendar' },
-  { id: 'tax-rules', title: 'Tax rules', group: 'Catalog & pricing', icon: 'settings' },
+  { id: 'tax-rules', title: 'Tax rules', group: 'Catalog & pricing', icon: 'percent' },
   { id: 'discount-rules', title: 'Discount rules', group: 'Catalog & pricing', icon: 'tag' },
   {
     id: 'quotation-templates',
-    title: 'Quotation templates',
+    title: 'Quote templates',
     group: 'Catalog & pricing',
     icon: 'file',
   },
@@ -64,12 +54,19 @@ const statusOptions: Record<string, string[]> = {
   'quotation-templates': ['active', 'inactive'],
   staff: ['active', 'inactive'],
 };
-const navigate = (resource: string, id?: number) => {
-  location.hash = `${resource}${id ? `/${id}` : ''}`;
+const navigate = (resource: string, id?: number, filter?: string) => {
+  const previous = routeFromHash();
+  const status = filter ?? (previous.resource === resource ? previous.status : '');
+  location.hash = `${resource}${id ? `/${id}` : ''}${status ? `?status=${encodeURIComponent(status)}` : ''}`;
 };
 const routeFromHash = () => {
-  const [resource, id] = location.hash.slice(1).split('/');
-  return { resource: resource || 'overview', id: /^\d+$/.test(id || '') ? Number(id) : null };
+  const [path, query = ''] = location.hash.slice(1).split('?');
+  const [resource, id] = path.split('/');
+  return {
+    resource: resource || 'overview',
+    id: /^\d+$/.test(id || '') ? Number(id) : null,
+    status: new URLSearchParams(query).get('status') || '',
+  };
 };
 
 function Account({
@@ -129,113 +126,90 @@ function columns(kind: string): Column[] {
       />
     ),
   };
-  const common: Record<string, Column[]> = {
+  const generic = ['Name / reference', 'Type / customer', 'Value / date'];
+  const fields: Record<string, ((row: Row) => any)[]> = {
     customers: [
-      { title: 'Customer', value: (row) => <strong>{row.name}</strong> },
-      { title: 'Email', value: (row) => row.email },
-      status,
-    ],
-    staff: [
-      { title: 'Name', value: (row) => <strong>{row.name}</strong> },
-      { title: 'Email', value: (row) => row.email },
-      status,
+      (row) => row.name,
+      (row) => row.email,
+      (row) => `${row.active_subscription_count || 0} active`,
     ],
     products: [
-      {
-        title: 'Product',
-        value: (row) => (
-          <>
-            <strong>{row.name}</strong>
-            <small>{row.sku || row.number}</small>
-          </>
-        ),
-      },
-      { title: 'Type', value: (row) => label(row.type || 'software') },
-      {
-        title: 'Sales price',
-        numeric: true,
-        value: (row) => amount(row.sales_price, row.currency),
-      },
-      status,
+      (row) => row.name,
+      (row) => label(row.type || 'software'),
+      (row) => amount(row.sales_price, row.currency),
     ],
     plans: [
-      { title: 'Plan', value: (row) => <strong>{row.name}</strong> },
-      { title: 'Interval', value: (row) => label(row.billing_interval) },
-      { title: 'Plan fee', numeric: true, value: (row) => amount(row.price, row.currency) },
-      status,
+      (row) => row.name,
+      (row) => label(row.billing_interval),
+      (row) => amount(row.price, row.currency),
     ],
-    'tax-rules': [
-      { title: 'Tax rule', value: (row) => row.name },
-      { title: 'Rate', numeric: true, value: (row) => `${row.rate_percent}%` },
-      {
-        title: 'Jurisdiction',
-        value: (row) => [row.country, row.region].filter(Boolean).join(' · ') || 'All',
-      },
-      { title: 'Effective from', value: (row) => day(row.effective_from) },
-      status,
-    ],
+    'tax-rules': [(row) => row.name, (row) => `${row.rate_percent}%`, (row) => row.effective_from],
     'discount-rules': [
-      { title: 'Discount', value: (row) => row.name },
-      {
-        title: 'Value',
-        numeric: true,
-        value: (row) =>
-          row.kind === 'percentage' ? `${row.value}%` : amount(row.value, row.currency),
-      },
-      {
-        title: 'Usage',
-        value: (row) => `${row.usage_count || 0} / ${row.usage_limit || 'Unlimited'}`,
-      },
-      { title: 'Ends on', value: (row) => day(row.ends_on) },
-      status,
+      (row) => row.name,
+      (row) => label(row.kind),
+      (row) =>
+        row.ends_on && row.ends_on < new Date().toISOString().slice(0, 10)
+          ? 'Expired'
+          : row.usage_limit
+            ? `${Math.max(0, row.usage_limit - (row.usage_count || 0))} uses left`
+            : 'Unlimited',
     ],
     'quotation-templates': [
-      { title: 'Template', value: (row) => row.name },
-      { title: 'Plan', value: (row) => row.plan?.name || '—' },
-      { title: 'Validity', value: (row) => `${row.validity_days} days` },
-      status,
+      (row) => row.name,
+      (row) =>
+        row.plan?.billing_interval === 'yearly'
+          ? 'Annual'
+          : label(row.plan?.billing_interval || 'monthly'),
+      (row) => `${row.validity_days} days`,
     ],
-    subscriptions: [
-      { title: 'Subscription', value: (row) => <strong>{row.number}</strong> },
-      { title: 'Customer', value: (row) => row.customer?.name || '—' },
-      { title: 'Plan', value: (row) => row.plan?.name || '—' },
-      { title: 'Next billing', value: (row) => day(row.next_billing_date) },
-      status,
-    ],
-    invoices: [
-      { title: 'Invoice', value: (row) => <strong>{row.number}</strong> },
-      { title: 'Customer', value: (row) => row.customer?.name || '—' },
-      { title: 'Due date', value: (row) => day(row.due_on) },
-      { title: 'Amount due', numeric: true, value: (row) => amount(row.amount_due, row.currency) },
-      status,
-    ],
-    payments: [
-      { title: 'Invoice', value: (row) => row.invoice_number || `Invoice ${row.invoice_id}` },
-      { title: 'Date', value: (row) => day(row.paid_at) },
-      { title: 'Method', value: (row) => label(row.method) },
-      { title: 'Amount', numeric: true, value: (row) => amount(row.amount, row.currency) },
-    ],
-    'billing-runs': [
-      { title: 'Run', value: (row) => row.number },
-      { title: 'Billing date', value: (row) => day(row.due_on) },
-      { title: 'Created', numeric: true, value: (row) => row.created_count },
-      { title: 'Skipped', numeric: true, value: (row) => row.skipped_count },
-      { title: 'Failed', numeric: true, value: (row) => row.failed_count },
-      status,
-    ],
+    subscriptions: [(row) => row.number, (row) => row.customer?.name, (row) => row.plan?.name],
     requests: [
-      { title: 'Request', value: (row) => row.number },
-      { title: 'Action', value: (row) => label(row.action) },
-      { title: 'Subscription', value: (row) => `Subscription ${row.subscription_id}` },
-      status,
-    ],
-    outbox: [
-      { title: 'Message', value: (row) => label(row.action) },
-      { title: 'Record', value: (row) => row.record_id },
-      { title: 'Created', value: (row) => day(row.created_at) },
+      (row) => row.number,
+      (row) => label(row.action),
+      (row) => `Subscription ${row.subscription_id}`,
     ],
   };
-  return common[kind] || [];
+  if (fields[kind])
+    return [
+      ...fields[kind].map((value, index) => ({ title: generic[index], value })),
+      kind === 'customers' ? { title: 'Status', value: () => 'Open' } : status,
+    ];
+  if (kind === 'staff')
+    return [
+      { title: 'Name', value: (row) => row.name },
+      { title: 'Email', value: (row) => row.email },
+      { title: 'Role', value: (row) => label(row.role) },
+      status,
+    ];
+  if (kind === 'invoices')
+    return [
+      { title: 'Reference', value: (row) => row.number },
+      { title: 'Customer / date', value: (row) => row.customer?.name },
+      { title: 'Due date', value: (row) => row.due_on },
+      status,
+    ];
+  if (kind === 'payments')
+    return [
+      { title: generic[0], value: (row) => `PAY-${row.id}` },
+      { title: generic[1], value: (row) => row.invoice_number },
+      { title: generic[2], value: (row) => label(row.method) },
+      { title: 'Status', value: (row) => amount(row.amount, row.currency) },
+    ];
+  if (kind === 'billing-runs')
+    return [
+      { title: 'Run', value: (row) => row.number },
+      { title: 'Billing date', value: (row) => day(row.due_on) },
+      { title: 'Created', value: (row) => row.created_count },
+      { title: 'Skipped', value: (row) => row.skipped_count },
+      { title: 'Failed', value: (row) => row.failed_count },
+    ];
+  if (kind === 'outbox')
+    return [
+      { title: 'Message', value: (row) => label(row.action) },
+      { title: 'Recipient', value: (row) => row.recipient },
+      { title: 'Date', value: (row) => day(row.created_at) },
+    ];
+  return [{ title: 'Reference', value: (row) => row.number || row.name }, status];
 }
 
 export function App() {
@@ -258,7 +232,7 @@ export function App() {
     [notice, setNotice] = useState(''),
     [revision, setRevision] = useState(0),
     [search, setSearch] = useState(''),
-    [status, setStatus] = useState(''),
+    [status, setStatus] = useState(route.status),
     [nextCursor, setNextCursor] = useState<number | null>(null);
   const [editor, setEditor] = useState<{ kind: string; initial?: Row } | null>(null),
     [review, setReview] = useState<Command | null>(null),
@@ -303,6 +277,7 @@ export function App() {
     setUser(null);
     setRows([]);
     setSelected(null);
+    setNotes(false);
   }
   function loggedIn(nextToken: string, account: User) {
     try {
@@ -345,8 +320,8 @@ export function App() {
       setRoute(next);
       if (next.resource !== resourceRef.current) {
         setSearch('');
-        setStatus('');
       }
+      setStatus(next.status);
       resourceRef.current = next.resource;
       setEditor(null);
       setReview(null);
@@ -371,8 +346,7 @@ export function App() {
   }, []);
   useEffect(() => {
     if (!mobile || !mobileOpen) return;
-    const first = sidebar.current?.querySelector<HTMLButtonElement>('nav button');
-    first?.focus();
+    toggle.current?.focus();
     const trap = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setMobileOpen(false);
@@ -381,9 +355,9 @@ export function App() {
       if (event.key !== 'Tab') return;
       const buttons = [
         toggle.current!,
-        ...sidebar.current!.querySelectorAll<HTMLButtonElement>('button'),
-      ].filter((button) => !button.disabled);
-      const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        ...sidebar.current!.querySelectorAll<HTMLElement>('button, summary'),
+      ].filter((button) => !button.matches(':disabled') && button.getClientRects().length > 0);
+      const index = buttons.indexOf(document.activeElement as HTMLElement);
       if (event.shiftKey && index <= 0) {
         event.preventDefault();
         buttons.at(-1)?.focus();
@@ -400,6 +374,7 @@ export function App() {
   }, [mobile, mobileOpen]);
   function listPath(cursor = 0) {
     const query = new URLSearchParams({ limit: '25', search });
+    if (route.resource === 'subscriptions') query.set('sort', 'newest');
     if (cursor) query.set('cursor', String(cursor));
     if (status === 'overdue' && route.resource === 'invoices') query.set('overdue', 'true');
     else if (route.resource === 'staff' && status) query.set('active', String(status === 'active'));
@@ -422,6 +397,7 @@ export function App() {
       () =>
         request(listPath(), token, { signal: controller.signal })
           .then((result) => {
+            if (controller.signal.aborted) return;
             setRows(result.data);
             setNextCursor(result.next_cursor ?? null);
           })
@@ -499,9 +475,41 @@ export function App() {
       setDetailError((cause as Error).message);
     }
   }
+  const inPageEditor = editor && !['staff', 'tax-rules'].includes(editor.kind);
+  const pageName = inPageEditor
+    ? {
+        products: 'Product editor',
+        plans: 'Plan editor',
+        'discount-rules': 'Discount editor',
+        'quotation-templates': 'Template editor',
+        subscriptions: 'New subscription',
+      }[editor.kind] || 'Editor'
+    : route.id
+      ? route.resource === 'invoices'
+        ? user?.role === 'customer'
+          ? 'My invoice detail'
+          : 'Invoice detail'
+        : route.resource === 'subscriptions'
+          ? user?.role === 'customer'
+            ? 'My subscription detail'
+            : 'Subscription detail'
+          : route.resource === 'customers'
+            ? 'Customer account'
+            : selected?.name || selected?.number || 'Record details'
+      : user?.role === 'customer' && route.resource === 'overview'
+        ? 'My account'
+        : resource?.title || 'Overview';
   useEffect(() => {
-    document.title = `${resource?.title || 'Sign in'} · Brightloop`;
-  }, [resource?.title, user]);
+    if (user) document.title = `${pageName} · Brightloop`;
+  }, [pageName, user]);
+  useEffect(() => {
+    if (!user || mobileOpen || notes) return;
+    const frame = requestAnimationFrame(() => {
+      if (!document.querySelector('dialog[open]'))
+        document.getElementById('main-content')?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [route.resource, route.id, editor, user?.id]);
   const resetToken = new URL(location.href).searchParams.get('reset_token');
   if (resetToken) return <Auth onLogin={loggedIn} initialResetToken={resetToken} />;
   if (checking)
@@ -513,11 +521,24 @@ export function App() {
   if (!user) return <Auth onLogin={loggedIn} />;
   const tableColumns = columns(route.resource);
   const expanded = mobile ? mobileOpen : !collapsed;
-  const inPageEditor = editor && !['staff', 'tax-rules'].includes(editor.kind);
-  const pageName =
-    user.role === 'customer' && route.resource === 'overview'
-      ? 'My account'
-      : resource?.title || 'Overview';
+  const navOrder = [
+    'overview',
+    'subscriptions',
+    'invoices',
+    'billing-runs',
+    'customers',
+    'payments',
+    'reports',
+    'products',
+    'plans',
+    'quotation-templates',
+    'discount-rules',
+    'tax-rules',
+    'staff',
+  ];
+  const navItems = visible
+    .filter((item) => item.id !== 'account' && item.id !== 'outbox' && item.id !== 'requests')
+    .sort((a, b) => navOrder.indexOf(a.id) - navOrder.indexOf(b.id));
   const descriptions: Record<string, string> = {
     overview:
       user.role === 'customer'
@@ -561,7 +582,7 @@ export function App() {
   }
   return (
     <div
-      className={`app app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${mobileOpen ? 'nav-open' : ''}`}
+      className={`app app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${mobileOpen ? 'nav-open' : ''} ${notes ? 'notes-open' : ''}`}
     >
       <button
         ref={toggle}
@@ -600,7 +621,7 @@ export function App() {
         id="sidebar"
         className="sidebar"
         aria-label="Main navigation"
-        inert={!expanded}
+        inert={!expanded || notes}
         aria-hidden={!expanded}
       >
         <div className="brand-row">
@@ -609,6 +630,7 @@ export function App() {
           </div>
         </div>
         <div className="workspace">
+          <span className="workspace-icon">B</span>
           <span>
             <strong>Brightloop Software</strong>
           </span>
@@ -616,12 +638,14 @@ export function App() {
         <nav className="navs" aria-label="Screens">
           {[
             ...new Set(
-              visible
-                .filter((item) => item.id !== 'account')
-                .map((item) => (user.role === 'customer' ? 'Customer portal' : item.group)),
+              navItems.map((item) => (user.role === 'customer' ? 'Customer portal' : item.group)),
             ),
           ].map((group) => (
-            <details className="nav-group-wrap" key={group} open>
+            <details
+              className="nav-group-wrap"
+              key={group}
+              open={group === (user.role === 'customer' ? 'Customer portal' : resource?.group)}
+            >
               <summary>
                 <span className="section-label">
                   <Icon
@@ -632,7 +656,7 @@ export function App() {
                           ? 'users'
                           : group === 'Customer portal'
                             ? 'user'
-                            : 'grid'
+                            : 'receipt'
                     }
                   />
                   {group}
@@ -640,7 +664,7 @@ export function App() {
                 <Icon name="chevron" />
               </summary>
               <div className="nav-items">
-                {visible
+                {navItems
                   .filter(
                     (item) =>
                       item.id !== 'account' && (user.role === 'customer' || item.group === group),
@@ -656,12 +680,14 @@ export function App() {
                       <span>
                         {user.role === 'customer'
                           ? {
-                              overview: 'My account',
+                              overview: 'Portal overview',
                               subscriptions: 'My subscriptions',
                               invoices: 'My invoices',
                               requests: 'My requests',
                             }[item.id] || item.title
-                          : item.title}
+                          : item.id === 'plans'
+                            ? 'Billing plans'
+                            : item.title}
                       </span>
                     </button>
                   ))}
@@ -670,7 +696,7 @@ export function App() {
           ))}
         </nav>
       </aside>
-      <div className="main workspace-main" inert={mobile && mobileOpen}>
+      <div className="main workspace-main" inert={(mobile && mobileOpen) || notes}>
         <header className="topbar">
           <div className="top-left">
             <button
@@ -694,13 +720,23 @@ export function App() {
               </span>
             </button>
             <div className="crumbs">
-              <span className="crumb-section">Workspace</span>
+              <span className="crumb-section">
+                {user.role === 'customer'
+                  ? 'Customer portal'
+                  : resource?.group || 'Billing operations'}
+              </span>
               <span className="crumb-divider">/</span>
-              <strong className="crumb-page">{pageName}</strong>
+              <span className="crumb-page">{pageName}</span>
             </div>
           </div>
           <div className="top-right">
-            <button className="notes-trigger" onClick={() => setNotes(true)}>
+            <button
+              className="notes-trigger"
+              aria-label="Notes"
+              onClick={() => setNotes(true)}
+              aria-controls="motion"
+              aria-expanded={notes}
+            >
               <Icon name="info" />
               <span>Notes</span>
             </button>
@@ -710,11 +746,11 @@ export function App() {
               aria-label={`${user.name}, ${user.role}`}
               onClick={() => navigate('account')}
             >
-              BL
+              {user.role.slice(0, 2).toUpperCase()}
             </button>
           </div>
         </header>
-        <main className="canvas" id="main-content">
+        <main className="canvas" id="main-content" tabIndex={-1}>
           {notice && (
             <div className="notice" role="status">
               {notice}
@@ -783,7 +819,11 @@ export function App() {
                   <button
                     className="btn primary"
                     onClick={() =>
-                      navigate(user.role === 'customer' ? 'subscriptions' : 'invoices')
+                      navigate(
+                        user.role === 'customer' ? 'subscriptions' : 'invoices',
+                        undefined,
+                        user.role === 'customer' ? '' : 'overdue',
+                      )
                     }
                   >
                     {user.role === 'customer' ? 'View my subscriptions' : 'Review overdue'}
@@ -794,8 +834,7 @@ export function App() {
                   <button
                     className="btn primary"
                     onClick={() => {
-                      setStatus('overdue');
-                      navigate('invoices');
+                      navigate('invoices', undefined, 'overdue');
                     }}
                   >
                     View overdue invoices
@@ -820,6 +859,11 @@ export function App() {
                   <button className="btn" onClick={logout}>
                     Sign out
                   </button>
+                  {user.role === 'admin' && (
+                    <button className="btn" onClick={() => navigate('outbox')}>
+                      Demo outbox
+                    </button>
+                  )}
                 </>
               ) : (
                 <section className="panel list-panel" aria-busy={busy}>
@@ -833,7 +877,16 @@ export function App() {
                     </Field>
                     {statusOptions[route.resource] && (
                       <Field name="Status">
-                        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+                        <select
+                          value={status}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setStatus(value);
+                            const url = new URL(location.href);
+                            url.hash = `${route.resource}${route.id ? `/${route.id}` : ''}${value ? `?status=${encodeURIComponent(value)}` : ''}`;
+                            history.replaceState(null, '', url);
+                          }}
+                        >
                           <option value="">All records</option>
                           {statusOptions[route.resource].map((value) => (
                             <option key={value} value={value}>
@@ -874,7 +927,7 @@ export function App() {
                                 {index === 0 ? (
                                   <button
                                     className="row-link"
-                                    aria-label={`Open ${row.number || row.name || row.id}`}
+                                    aria-label={`Open ${row.name || row.number || row.id}`}
                                     onClick={() => openRow(row)}
                                   >
                                     {column.value(row)}
@@ -912,32 +965,27 @@ export function App() {
       </div>
       {editor && !inPageEditor && editorView}
       {notes && (
-        <Dialog title="Workspace notes" onClose={() => setNotes(false)}>
-          <p>{descriptions[route.resource]}</p>
-          <div className="actions">
-            <button
-              className="btn"
-              onClick={() => {
-                setNotes(false);
-                navigate('outbox');
-              }}
-            >
-              Demo outbox
-            </button>
-            <button
-              className="btn"
-              onClick={() => {
-                setNotes(false);
-                navigate('account');
-              }}
-            >
-              My account
-            </button>
-            <button className="btn" onClick={logout}>
-              Sign out
-            </button>
-          </div>
-        </Dialog>
+        <Notes
+          screen={
+            inPageEditor
+              ? {
+                  products: 'product-editor',
+                  plans: 'plan-editor',
+                  'discount-rules': 'discount-editor',
+                  'quotation-templates': 'template-editor',
+                  subscriptions: 'subscription-editor',
+                }[editor.kind] || route.resource
+              : route.id
+                ? {
+                    subscriptions: 'subscription-detail',
+                    invoices: 'invoice-detail',
+                    customers: 'customer-detail',
+                  }[route.resource] || route.resource
+                : route.resource
+          }
+          title={pageName}
+          onClose={() => setNotes(false)}
+        />
       )}
       {review && (
         <Review

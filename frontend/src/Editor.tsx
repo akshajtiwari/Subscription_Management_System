@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError, actionHeaders, request, type Row } from './api';
 import { CatalogPicker, catalogKey } from './CatalogPicker';
+import { Icon } from './Icon';
 import { Dialog, Empty, ErrorBox, Field, Loading, Textarea, amount, today } from './ui';
 
 const ownedFields: Record<string, string[]> = {
@@ -113,12 +114,19 @@ function EditorFrame({
       <div className="split">
         <section className="panel">
           <div className="panelhead">
-            <h2>Details</h2>
+            <div>
+              <h2>Details</h2>
+              <p>Set up the information below to continue.</p>
+            </div>
+            <span className="pill neutral">Draft</span>
           </div>
           {children}
         </section>
         <aside className="panel review-panel">
-          <div className="review-head">Ready to review</div>
+          <div className="review-head">
+            <Icon name="check" />
+            <span>Ready to review</span>
+          </div>
           <h2>Before you continue</h2>
           <p className="muted">
             Check the dates, pricing, and permissions against the customer agreement.

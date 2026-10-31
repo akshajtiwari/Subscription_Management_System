@@ -242,26 +242,6 @@ legend {
   gap: 8px;
   flex-wrap: wrap;
 }
-.detail-actions button {
-  border: 1px solid #d4dce1;
-  border-radius: 7px;
-  background: #fff;
-  padding: 11px 16px;
-  color: var(--ink);
-  font-size: 0.91rem;
-  font-weight: 570;
-}
-.detail-actions button.primary {
-  color: #fff;
-  background: var(--accent);
-  border-color: var(--accent);
-}
-.detail-actions button:hover {
-  background: #f4f7f5;
-}
-.detail-actions button.primary:hover {
-  background: var(--accent-dark);
-}
 .detail-body > .detail-status {
   display: flex;
   justify-content: space-between;

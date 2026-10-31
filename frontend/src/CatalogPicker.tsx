@@ -32,18 +32,23 @@ export function CatalogPicker({
       () => {
         setBusy(true);
         setError('');
-        request(`catalog-items?search=${encodeURIComponent(search)}`, token, {
-          signal: controller.signal,
-        })
-          .then((result) =>
+        request(
+          `catalog-items?search=${encodeURIComponent(search)}&currency=${currency || ''}&base_only=${baseOnly}`,
+          token,
+          {
+            signal: controller.signal,
+          },
+        )
+          .then((result) => {
+            if (controller.signal.aborted) return;
             setRows(
               result.data.filter(
                 (row: Row) =>
                   (!currency || row.currency === currency) &&
                   (!baseOnly || row.variant_id === null),
               ),
-            ),
-          )
+            );
+          })
           .catch((cause) => {
             if (cause.name !== 'AbortError') setError(cause.message);
           })

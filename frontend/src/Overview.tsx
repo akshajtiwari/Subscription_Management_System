@@ -16,9 +16,10 @@ export function Metric({ title, value, note }: { title: string; value: string; n
 export function Trend({ points }: { points: Row[] }) {
   if (!points.length) return <Empty>No payments in this date range.</Empty>;
   const max = Math.max(...points.map((point) => Number(point.collections)), 1);
+  const min = Math.min(...points.map((point) => Number(point.collections)));
   const coordinates = points.map((point, index) => [
     points.length === 1 ? 300 : (index * 600) / (points.length - 1),
-    195 - (Number(point.collections) / max) * 150,
+    max === min ? 108 : 168 - ((Number(point.collections) - min) / (max - min)) * 121,
   ]);
   const path = coordinates
     .map(([x, y], index) =>
@@ -27,7 +28,7 @@ export function Trend({ points }: { points: Row[] }) {
         : `M${x} ${y}`,
     )
     .join(' ');
-  const last = coordinates.at(-1)!;
+  const last = coordinates.at(-2) || coordinates.at(-1)!;
   return (
     <>
       <div className="chart-wrap collection-chart">
@@ -79,7 +80,7 @@ export function Overview({
     const end = new Date(),
       start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 5, 1));
     Promise.all([
-      request('subscriptions?limit=25', token, { signal: controller.signal }),
+      request('subscriptions?limit=25&sort=newest', token, { signal: controller.signal }),
       request('invoices?limit=100', token, { signal: controller.signal }),
       own
         ? Promise.resolve(null)
@@ -116,6 +117,13 @@ export function Overview({
   const overdue = invoices.find((invoice) => invoice.overdue),
     draft = invoices.find((invoice) => invoice.status === 'draft'),
     active = subscriptions.find((subscription) => subscription.status === 'active');
+  const renewalDays = active?.next_billing_date
+    ? Math.round(
+        (new Date(`${active.next_billing_date}T00:00:00Z`).getTime() -
+          new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`).getTime()) /
+          86400000,
+      )
+    : null;
   const activeCount = own
     ? subscriptions.filter((subscription) => subscription.status === 'active').length
     : summary?.active_subscriptions;
@@ -237,7 +245,8 @@ export function Overview({
                 <span>
                   <strong>Subscription {active.number}</strong>
                   <small>
-                    {active.customer?.name} · Renews {day(active.next_billing_date)}
+                    {active.customer?.name} · Renews{' '}
+                    {renewalDays === 1 ? 'tomorrow' : day(active.next_billing_date)}
                   </small>
                 </span>
                 <span>{own ? 'Active' : 'Review'}</span>

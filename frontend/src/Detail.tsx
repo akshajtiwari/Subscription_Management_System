@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
-import { request, type Row, type User } from './api';
-import { Empty, ErrorBox, Loading, Status, amount, day, label } from './ui';
+import { type Row, type User } from './api';
+import { Empty, Status, amount, day, label } from './ui';
 
 export function ItemLines({ row, invoice = false }: { row: Row; invoice?: boolean }) {
   const currency = row.currency || row.plan?.currency || 'USD';
@@ -10,10 +9,10 @@ export function ItemLines({ row, invoice = false }: { row: Row; invoice?: boolea
         <thead>
           <tr>
             <th>Product</th>
-            <th className="numeric">Quantity</th>
             <th className="numeric">Unit price</th>
+            <th className="numeric">Qty</th>
             <th className="numeric">Tax</th>
-            <th className="numeric">Amount</th>
+            <th className="numeric">Line amount</th>
           </tr>
         </thead>
         <tbody>
@@ -22,8 +21,8 @@ export function ItemLines({ row, invoice = false }: { row: Row; invoice?: boolea
               <td>
                 <strong>{row.plan_name || 'Plan fee'}</strong>
               </td>
-              <td className="numeric">1</td>
               <td className="numeric">{amount(row.plan_fee, currency)}</td>
+              <td className="numeric">1</td>
               <td className="numeric">
                 {row.plan_line ? amount(row.plan_line.tax_total, currency) : '—'}
               </td>
@@ -43,12 +42,14 @@ export function ItemLines({ row, invoice = false }: { row: Row; invoice?: boolea
                     : ''}
                 </small>
               </td>
-              <td className="numeric">{line.quantity}</td>
               <td className="numeric">{amount(line.unit_price, currency)}</td>
+              <td className="numeric">{line.quantity}</td>
               <td className="numeric">
-                {invoice && line.tax_total !== undefined
-                  ? amount(line.tax_total, currency)
-                  : 'Automatic'}
+                {line.taxes?.length
+                  ? line.taxes.map((tax: Row) => `${tax.rate_percent}%`).join(' + ')
+                  : line.tax_total !== undefined
+                    ? amount(line.tax_total, currency)
+                    : 'Automatic'}
               </td>
               <td className="numeric">
                 {amount(
@@ -82,7 +83,6 @@ export function Detail({
   kind,
   row,
   user,
-  token,
   onAction,
   onEdit,
   onOpen,
@@ -99,23 +99,6 @@ export function Detail({
   onDownload: () => void;
   showActions?: boolean;
 }) {
-  const [history, setHistory] = useState<Row[]>([]);
-  const [historyBusy, setHistoryBusy] = useState(false);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    if (kind !== 'subscriptions') return;
-    const controller = new AbortController();
-    setHistoryBusy(true);
-    request(`subscriptions/${row.id}/history`, token, { signal: controller.signal })
-      .then((result) => setHistory(result.data))
-      .catch((cause) => {
-        if (cause.name !== 'AbortError') setError(cause.message);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setHistoryBusy(false);
-      });
-    return () => controller.abort();
-  }, [kind, row.id, row.version, token]);
   const currency = row.currency || row.plan?.currency || 'USD';
   return (
     <div className="detail-body">
@@ -251,133 +234,17 @@ export function Detail({
           ))}
         </>
       )}
-      {['subscriptions', 'quotation-templates'].includes(kind) && (
+      {kind === 'quotation-templates' && (
         <>
           <Facts
-            values={
-              kind === 'subscriptions'
-                ? [
-                    ['Customer', row.customer?.name],
-                    ['Plan', row.plan?.name],
-                    ['Plan fee', amount(row.plan?.price, currency)],
-                    ['Start date', day(row.start_date)],
-                    ['Expiry date', day(row.expiry_date)],
-                    ['Next billing date', day(row.next_billing_date)],
-                    ['Payment terms', `${row.payment_terms_days} days`],
-                    ['Billing timezone', row.billing_timezone || 'UTC'],
-                    ['Quotation valid until', day(row.quote_expires_at)],
-                  ]
-                : [
-                    ['Plan', row.plan?.name],
-                    ['Validity', `${row.validity_days} days`],
-                  ]
-            }
+            values={[
+              ['Plan', row.plan?.name],
+              ['Validity', `${row.validity_days} days`],
+            ]}
           />
           <h3>Product lines</h3>
           <ItemLines row={row} />
-          {kind === 'subscriptions' && row.pending_request && (
-            <div className="scheduled-change">
-              <strong>{label(row.pending_request.action)} requested</strong>
-              <Status value={row.pending_request.status} />
-            </div>
-          )}
-          {kind === 'subscriptions' && (
-            <section>
-              <h3>Lifecycle history</h3>
-              <ErrorBox error={error} />
-              {historyBusy ? (
-                <Loading />
-              ) : history.length ? (
-                <ol className="history">
-                  {history.map((entry, index) => (
-                    <li key={index}>
-                      <strong>{label(entry.action)}</strong>
-                      <span>{day(entry.created_at)}</span>
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <Empty>No history recorded.</Empty>
-              )}
-            </section>
-          )}
         </>
-      )}
-      {kind === 'invoices' && (
-        <div className="invoice-document">
-          <div className="invoice-parties">
-            <div>
-              <span className="eyebrow">Bill to</span>
-              <h3>{row.customer?.name}</h3>
-              <p>{row.customer?.email}</p>
-            </div>
-            <Facts
-              values={[
-                ['Period', `${day(row.period_start)} – ${day(row.period_end)}`],
-                ['Due date', day(row.due_on)],
-                ['Currency', currency],
-              ]}
-            />
-          </div>
-          <ItemLines row={row} invoice />
-          <dl className="invoice-totals">
-            <div>
-              <dt>Subtotal</dt>
-              <dd>{amount(row.subtotal, currency)}</dd>
-            </div>
-            <div>
-              <dt>Discount</dt>
-              <dd>−{amount(row.discount_total, currency)}</dd>
-            </div>
-            {(row.taxes || []).map((tax: Row, index: number) => (
-              <div key={index}>
-                <dt>
-                  {tax.name} ({tax.rate_percent}%)
-                </dt>
-                <dd>{amount(tax.amount, currency)}</dd>
-              </div>
-            ))}
-            <div className="total">
-              <dt>Total</dt>
-              <dd>{amount(row.total, currency)}</dd>
-            </div>
-            <div>
-              <dt>Payments</dt>
-              <dd>{amount(row.amount_paid, currency)}</dd>
-            </div>
-            <div className="total">
-              <dt>Amount due</dt>
-              <dd>{amount(row.amount_due, currency)}</dd>
-            </div>
-          </dl>
-          <h3>Payments</h3>
-          {row.payments?.length ? (
-            <div className="tablewrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Method</th>
-                    <th>Note</th>
-                    <th className="numeric">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {row.payments.map((payment: Row) => (
-                    <tr key={payment.id}>
-                      <td>{day(payment.paid_at)}</td>
-                      <td>{label(payment.method)}</td>
-                      <td>{payment.note || '—'}</td>
-                      <td className="numeric">{amount(payment.amount, currency)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <Empty>No payments recorded.</Empty>
-          )}
-        </div>
       )}
       {kind === 'payments' && (
         <Facts
@@ -517,6 +384,7 @@ export function RecordActions({
   const internal = user.role !== 'customer';
   const edit =
     (user.role === 'admin' &&
+      (kind !== 'staff' || row.role === 'staff') &&
       ['products', 'plans', 'tax-rules', 'discount-rules', 'staff', 'quotation-templates'].includes(
         kind,
       )) ||
@@ -536,6 +404,41 @@ export function RecordActions({
         : kind === 'subscriptions'
           ? row.available_actions || []
           : [];
+  if (kind === 'invoices')
+    return (
+      <div className="detail-actions actions">
+        {internal && actions.includes('confirm') && (
+          <button className="btn primary" onClick={() => onAction('confirm')}>
+            Confirm
+          </button>
+        )}
+        {internal && actions.includes('send') && (
+          <button className="btn" onClick={() => onAction('send')}>
+            Send
+          </button>
+        )}
+        {internal && row.status === 'confirmed' && Number(row.amount_due) > 0 && (
+          <button className="btn primary" onClick={() => onAction('payment')}>
+            Record payment
+          </button>
+        )}
+        {!['draft', 'canceled'].includes(row.status || '') && (
+          <button className="btn" onClick={onDownload}>
+            Download PDF
+          </button>
+        )}
+        {internal && actions.includes('cancel') && (
+          <button className="btn" onClick={() => onAction('cancel')}>
+            Cancel
+          </button>
+        )}
+        {internal && actions.includes('recalculate') && (
+          <button className="btn" onClick={() => onAction('recalculate')}>
+            Recalculate
+          </button>
+        )}
+      </div>
+    );
   return (
     <div className="detail-actions actions">
       {edit && (
@@ -547,31 +450,12 @@ export function RecordActions({
         <button
           key={action}
           type="button"
-          className={action === 'confirm' || action === 'activate' ? 'primary' : ''}
+          className={`btn ${action === 'confirm' || action === 'activate' ? 'primary' : ''}`}
           onClick={() => onAction(action)}
         >
-          {user.role === 'customer' && kind === 'subscriptions' ? 'Request ' : ''}
-          {label(action)}
+          {action === 'add_on' ? 'Change add-ons' : label(action)}
         </button>
       ))}
-      {kind === 'invoices' && !['draft', 'canceled'].includes(row.status || '') && (
-        <>
-          <button className="btn" type="button" onClick={onDownload}>
-            PDF
-          </button>
-          <button className="btn" type="button" onClick={() => window.print()}>
-            Print
-          </button>
-        </>
-      )}
-      {kind === 'invoices' &&
-        internal &&
-        row.status === 'confirmed' &&
-        Number(row.amount_due) > 0 && (
-          <button className="btn primary" onClick={() => onAction('payment')}>
-            Record payment
-          </button>
-        )}
       {kind === 'billing-runs' && row.failed_count > 0 && (
         <button className="btn primary" onClick={() => onAction('retry')}>
           Retry failed
