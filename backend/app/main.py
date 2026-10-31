@@ -256,6 +256,9 @@ def record_view(session, record, user):
             **plan.payload,
             "price": record.payload.get("plan_price", plan.payload["price"]),
             "currency": record.payload.get("currency", plan.payload["currency"]),
+            "billing_interval": record.payload.get(
+                "billing_interval", plan.payload["billing_interval"]
+            ),
         },
         "available_actions": actions,
         "pending_request": record_json(pending) if pending else None,
@@ -697,6 +700,7 @@ def resolved_subscription(session, payload):
         "lines": lines,
         "currency": currency,
         "plan_price": plan.payload["price"],
+        "billing_interval": plan.payload["billing_interval"],
         "next_billing_date": payload["start_date"],
         **term_length(
             date.fromisoformat(payload["start_date"]), date.fromisoformat(payload["expiry_date"])
@@ -854,24 +858,29 @@ def billing_run(
             ):
                 raise ValueError("action_unavailable")
             if action == "add_on":
-                new_lines = resolve_lines(
-                    session,
-                    [
-                        {
-                            "product_id": change["product_id"],
-                            "variant_id": change.get("variant_id"),
-                            "quantity": change["quantity"],
-                        }
-                    ],
-                    payload["currency"],
-                )
+                if change.get("proposed_line"):
+                    new_lines = [change["proposed_line"]]
+                else:
+                    new_lines = resolve_lines(
+                        session,
+                        [
+                            {
+                                "product_id": change["product_id"],
+                                "variant_id": change.get("variant_id"),
+                                "quantity": change["quantity"],
+                            }
+                        ],
+                        payload["currency"],
+                    )
                 payload["lines"] = payload["lines"] + new_lines
             elif action == "renew":
                 payload["expiry_date"] = renewal_date(payload).isoformat()
             elif action == "resume":
                 subscription.status = "active"
                 payload["next_billing_date"] = resume_date(
-                    payload, plan.payload["billing_interval"], due_on
+                    payload,
+                    payload.get("billing_interval", plan.payload["billing_interval"]),
+                    due_on,
                 ).isoformat()
             else:
                 subscription.status = {"pause": "paused", "close": "closed"}[action]
@@ -908,6 +917,9 @@ def billing_run(
             ).payload.copy()
             plan["price"] = subscription.payload.get("plan_price", plan["price"])
             plan["currency"] = subscription.payload["currency"]
+            plan["billing_interval"] = subscription.payload.get(
+                "billing_interval", plan["billing_interval"]
+            )
             next_on = date.fromisoformat(
                 subscription.payload.get("next_billing_date", subscription.payload["start_date"])
             )
@@ -1528,7 +1540,7 @@ def subscription_action(
     elif action == "resume":
         record.status = "active"
         payload["next_billing_date"] = resume_date(
-            payload, plan.payload["billing_interval"], today
+            payload, payload.get("billing_interval", plan.payload["billing_interval"]), today
         ).isoformat()
     else:
         record.status = {"pause": "paused", "close": "closed"}[action]
@@ -1572,11 +1584,12 @@ def customer_request(
     subscription = get_record(session, "subscriptions", record_id, user, lock=True)
     if body.action not in record_view(session, subscription, user)["available_actions"]:
         fail("action_unavailable", 409)
+    proposed = {}
     if body.action == "add_on":
         product = session.get(Record, body.product_id)
         if not product or product.payload.get("type") != "add_on":
             fail("add_on_unavailable")
-        resolve_lines(
+        proposed_line = resolve_lines(
             session,
             [
                 {
@@ -1587,12 +1600,13 @@ def customer_request(
             ],
             subscription.payload["currency"],
         )
+        proposed = {"proposed_line": proposed_line[0]}
     request = Record(
         kind="requests",
         number=f"REQ-{secrets.token_hex(4).upper()}",
         owner_id=user.id,
         status="pending",
-        payload={**body.model_dump(mode="json"), "subscription_id": subscription.id},
+        payload={**body.model_dump(mode="json"), **proposed, "subscription_id": subscription.id},
     )
     session.add(request)
     session.flush()

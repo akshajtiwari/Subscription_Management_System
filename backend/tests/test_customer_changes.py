@@ -148,6 +148,14 @@ def test_add_on_keeps_existing_agreed_prices(api):
         headers=headers["customer"],
     ).json()
     assert (
+        client.patch(
+            f"/api/v1/products/{addon['id']}",
+            json={"payload": {"sales_price": "50"}},
+            headers={**headers["admin"], "If-Match": str(addon["version"])},
+        ).status_code
+        == 200
+    )
+    assert (
         client.post(
             f"/api/v1/requests/{change['id']}/approve", headers=headers["staff"]
         ).status_code
@@ -215,3 +223,24 @@ def test_staff_can_reject_a_scheduled_change_before_it_is_applied(api):
         "available_actions"
     ]
     assert run_billing(api)["created_count"] == 1
+
+
+def test_existing_subscription_keeps_its_agreed_plan_price_and_interval(api):
+    from app.rules import next_date
+
+    client, headers, _ = api
+    row, _, plan = subscription(api)
+    assert (
+        client.patch(
+            f"/api/v1/plans/{plan['id']}",
+            json={"payload": {"price": "200", "billing_interval": "weekly"}},
+            headers={**headers["admin"], "If-Match": str(plan["version"])},
+        ).status_code
+        == 200
+    )
+    run_billing(api)
+    invoice = client.get("/api/v1/invoices", headers=headers["admin"]).json()["data"][0]
+    assert invoice["plan_fee"] == "100.00"
+    assert invoice["period_end"] == next_date(date.today(), "monthly", date.today().day).isoformat()
+    result = client.get(f"/api/v1/subscriptions/{row['id']}", headers=headers["customer"]).json()
+    assert result["plan"]["billing_interval"] == "monthly"
