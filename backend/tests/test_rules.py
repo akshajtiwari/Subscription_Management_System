@@ -103,3 +103,23 @@ def test_product_scoped_discount_excludes_plan_and_other_products():
     assert result["discount_total"] == "10.00"
     assert result["plan_line"]["discount"] == "0.00"
     assert result["lines"][1]["discount"] == "0.00"
+
+
+def test_product_discount_thresholds_only_count_eligible_products():
+    plan = {"price": "100.00", "currency": "USD"}
+    lines = [
+        {"product_id": 1, "unit_price": "10.00", "quantity": 1, "currency": "USD"},
+        {"product_id": 2, "unit_price": "20.00", "quantity": 100, "currency": "USD"},
+    ]
+    rule = {
+        "id": 1,
+        "kind": "percentage",
+        "value": "10",
+        "starts_on": "2026-01-01",
+        "scope": "products",
+        "product_ids": [1],
+        "minimum_quantity": 5,
+    }
+    assert invoice_amount(plan, lines, [rule], [], date(2026, 2, 1))["discount_total"] == "0.00"
+    rule = {**rule, "minimum_quantity": 1, "minimum_purchase": "50.00"}
+    assert invoice_amount(plan, lines, [rule], [], date(2026, 2, 1))["discount_total"] == "0.00"

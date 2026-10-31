@@ -76,10 +76,6 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
             rule["usage_limit"]
         ):
             continue
-        if subtotal < money(rule.get("minimum_purchase", 0), currency) or sum(
-            int(line["quantity"]) for line in lines
-        ) < int(rule.get("minimum_quantity", 0)):
-            continue
         eligible_bases = [
             base
             if rule.get("scope") != "products"
@@ -89,6 +85,16 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
             for index, base in enumerate(bases)
         ]
         base = sum(eligible_bases)
+        eligible_quantity = sum(
+            int(line["quantity"])
+            for line in lines
+            if rule.get("scope") != "products"
+            or line.get("product_id") in rule.get("product_ids", [])
+        )
+        if base < money(rule.get("minimum_purchase", 0), currency) or eligible_quantity < int(
+            rule.get("minimum_quantity", 0)
+        ):
+            continue
         reduction = (
             money(base * Decimal(rule["value"]) / 100, currency)
             if rule["kind"] == "percentage"
