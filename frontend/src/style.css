@@ -416,6 +416,21 @@ legend {
   align-items: flex-end;
   gap: 14px;
 }
+.report-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.report-layout table {
+  min-width: 440px;
+}
+.report-layout th,
+.report-layout td {
+  padding: 12px 10px;
+}
+@media (max-width: 1180px) {
+  .report-layout {
+    grid-template-columns: 1fr;
+  }
+}
 .account-panel {
   max-width: 620px;
 }

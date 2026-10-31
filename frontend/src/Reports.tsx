@@ -129,7 +129,7 @@ export function Reports({
         ))}
       </div>
       {points.length ? (
-        <div className="split">
+        <div className="split report-layout">
           <section className="panel">
             <div className="panelhead">
               <h2>{title} over time</h2>

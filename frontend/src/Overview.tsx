@@ -142,7 +142,9 @@ export function Overview({
         setInvoices(bills.data);
         setSummary(report?.overview || null);
         setPoints(report?.series || []);
-        const currencies = Object.keys(report?.overview?.currencies || {});
+        const currencies = own
+          ? [...new Set<string>(bills.data.map((invoice: Row) => invoice.currency))]
+          : Object.keys(report?.overview?.currencies || {});
         if (currencies.length)
           setCurrency((current) => (currencies.includes(current) ? current : currencies[0]));
       })
@@ -162,9 +164,11 @@ export function Overview({
   const monthCollections = points
     .filter((point) => point.currency === currency && point.period === currentMonth)
     .reduce((sum, point) => sum + Number(point.collections), 0);
-  const overdue = invoices.find((invoice) => invoice.overdue),
-    draft = invoices.find((invoice) => invoice.status === 'draft'),
-    active = subscriptions.find((subscription) => subscription.status === 'active');
+  const overdue = invoices.find((invoice) => invoice.overdue && invoice.currency === currency),
+    draft = invoices.find((invoice) => invoice.status === 'draft' && invoice.currency === currency),
+    active = subscriptions.find(
+      (subscription) => subscription.status === 'active' && subscription.currency === currency,
+    );
   const renewalDays = active?.next_billing_date
     ? Math.round(
         (new Date(`${active.next_billing_date}T00:00:00Z`).getTime() -
