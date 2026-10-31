@@ -4,9 +4,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const python = process.env.E2E_PYTHON || join(root, 'backend/.venv/bin/python');
-const quote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
-const database = `sqlite:///${join(tmpdir(), `brightloop-e2e-${randomUUID()}.db`)}`;
+const python =
+  process.env.E2E_PYTHON ||
+  join(root, 'backend/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+const quote = (value: string) =>
+  process.platform === 'win32'
+    ? `"${value.replaceAll('"', '""')}"`
+    : `'${value.replaceAll("'", "'\"'\"'")}'`;
+const database = `sqlite:///${join(tmpdir(), `brightloop-e2e-${randomUUID()}.db`).replaceAll('\\', '/')}`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -37,7 +42,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `${quote(python)} -m alembic upgrade head && ${quote(python)} -m app.seed && ${quote(python)} -m uvicorn app.main:app --host 127.0.0.1 --port 8003`,
+      command: `${quote(python)} -m app.dev --api-only --port 8003`,
       cwd: join(root, 'backend'),
       url: 'http://127.0.0.1:8003/api/v1/health',
       env: { DATABASE_URL: database, DEMO_SECRET: 'fictional-e2e-only' },

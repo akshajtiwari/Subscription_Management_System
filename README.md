@@ -7,18 +7,47 @@ reset links go to the **Demo outbox** instead of an external service.
 
 ## 1. Install prerequisites
 
-Use Linux, macOS, or Ubuntu inside Windows Subsystem for Linux (WSL). The commands
-below use Bash or Zsh. On Windows, install WSL from an administrator PowerShell:
+Use native Windows with PowerShell, Linux, or macOS. **Windows does not require
+Linux, WSL, Docker, or Make.** Python dependencies use pip in a project virtual
+environment on every platform.
+
+You need Git, **pyenv** (or **pyenv-win**), **Python 3.12.0**, and **Node.js 24 with
+npm**. The Python command runner works on all three platforms. Make is an optional
+shortcut on Linux/macOS. PostgreSQL is optional; SQLite needs no server installation.
+
+### Windows: native PowerShell setup
+
+1. Install [Git for Windows](https://git-scm.com/install/windows) and the **24.x Windows
+   installer** from the [Node.js downloads](https://nodejs.org/en/download). Include npm
+   and allow the installers to add their commands to PATH. Open a new PowerShell.
+2. Install [pyenv-win using Git](https://github.com/pyenv-win/pyenv-win/blob/master/docs/installation.md#git-commands).
+   Run this once; skip the clone if you already have pyenv-win:
 
 ```powershell
-wsl --install
+git clone https://github.com/pyenv-win/pyenv-win.git "$env:USERPROFILE\.pyenv"
+$brightloopPyenvRoot = "$env:USERPROFILE\.pyenv\pyenv-win"
+[Environment]::SetEnvironmentVariable("PYENV", "$brightloopPyenvRoot\", "User")
+[Environment]::SetEnvironmentVariable("PYENV_ROOT", "$brightloopPyenvRoot\", "User")
+[Environment]::SetEnvironmentVariable("PYENV_HOME", "$brightloopPyenvRoot\", "User")
+$brightloopUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable("Path", "$brightloopPyenvRoot\bin;$brightloopPyenvRoot\shims;$brightloopUserPath", "User")
 ```
 
-Restart if prompted, open Ubuntu, and complete the Linux steps there. Keep the
-checkout inside your Linux home directory. See Microsoft's [WSL installation guide](https://learn.microsoft.com/en-us/windows/wsl/install).
+3. Close and reopen PowerShell (restart VS Code too if using its terminal). Check:
 
-You need Git, Make, **pyenv**, **Python 3.12.0**, and **Node.js 24 with npm**. Docker
-with Compose is optional and is needed only for the PostgreSQL instructions below.
+```powershell
+git --version
+pyenv --version
+node --version
+npm.cmd --version
+```
+
+`node --version` should start with `v24.`. If `python` opens the Microsoft Store,
+turn off the App Installer Python aliases under **Manage app execution aliases**.
+Continue with step 2 below in this same native PowerShell. No shell activation or
+PowerShell execution-policy change is needed for the application commands.
+
+The Ubuntu/macOS prerequisite sections below are for those platforms only.
 
 ### Ubuntu / Debian
 
@@ -26,7 +55,7 @@ Install Git, Make, and the libraries needed to compile Python:
 
 ```bash
 sudo apt update
-sudo apt install -y git make build-essential ca-certificates wget \
+sudo apt install -y git pyenv exec python manage.py build-essential ca-certificates wget \
   libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
   libncurses-dev xz-utils tk-dev libffi-dev liblzma-dev
 git clone https://github.com/pyenv/pyenv.git "$HOME/.pyenv"
@@ -52,7 +81,7 @@ brew install git pyenv openssl@3 readline sqlite3 xz zlib
 
 Make is included with Apple's command line tools.
 
-### Enable pyenv in your shell
+### Enable pyenv in Bash / Zsh (Linux and macOS only)
 
 Add these lines once to `~/.bashrc` for Bash or `~/.zshrc` for Zsh:
 
@@ -81,8 +110,7 @@ covers login shells and other shell configurations.
 ### Install Node.js
 
 Install **Node.js 24**, including npm, using the [Node.js download page](https://nodejs.org/en/download).
-If you use nvm, run `nvm install 24` and `nvm use 24`. In WSL, install Node inside
-Ubuntu rather than using a Windows Node executable.
+If you use nvm on Linux/macOS, run `nvm install 24` and `nvm use 24`.
 
 Check that your terminal can find the required tools:
 
@@ -101,23 +129,29 @@ npm --version
 ```bash
 git clone https://github.com/akshajtiwari/Subscription_Management_System.git
 cd Subscription_Management_System
-pyenv install -s 3.12.0
-pyenv exec python --version
-make setup
 ```
 
-Run all following commands from this repository root unless a step says otherwise.
+Install the pinned Python version (skip installation if already installed):
+
+```text
+pyenv install 3.12.0
+pyenv exec python --version
+pyenv exec python manage.py setup
+```
+
+These commands work in PowerShell, Bash, and Zsh. Run all following commands from
+this repository root unless a step says otherwise.
 The committed `.python-version` selects Python 3.12.0 for this checkout.
 
-`make setup` creates `backend/.venv`, installs the locked Python dependencies with
+`manage.py setup` creates `backend/.venv` (`Scripts/python.exe` on Windows; `bin/python` on Linux/macOS), installs the locked Python dependencies with
 pip, installs the backend in editable mode, and installs frontend dependencies with
 `npm ci`. You do not need to activate the virtual environment. The first setup
-requires internet access and may take several minutes while Python compiles.
+requires internet access and may take several minutes on Linux/macOS while Python compiles. pyenv-win installs a native Windows Python build.
 
 ## 3. Start the app
 
 ```bash
-make dev
+pyenv exec python manage.py dev
 ```
 
 This command applies database migrations, seeds an empty database, and starts all
@@ -152,9 +186,11 @@ can manage operational workflows and approve customer requests. Customers see
 their own subscriptions, invoices, payments, and change requests. Test a reset
 from **Forgot password**, then open **Demo outbox** as an admin to find its link.
 
-### Run in the background
+### Run in the background (Linux / macOS)
 
-After setup, start the same supervisor directly from the repository root:
+On Windows, keep the PowerShell development terminal open and use Ctrl+C to stop
+all services. On Linux/macOS, you can also start the supervisor in the background
+from the repository root:
 
 ```bash
 nohup backend/.venv/bin/python -m app.dev > /tmp/brightloop-dev.log 2>&1 &
@@ -173,7 +209,7 @@ Do not start a second instance while another one is using the same ports.
 ## 4. Run local checks
 
 ```bash
-make verify
+pyenv exec python manage.py verify
 ```
 
 This runs formatting checks, Python lint, backend tests, frontend type checks, and the production
@@ -183,24 +219,24 @@ concurrency check is skipped unless `TEST_DATABASE_URL` is configured.
 
 | Command                                                                               | Purpose                                              |
 | ------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `make test`                                                                           | Python lint, backend tests, and frontend type checks |
-| `make build`                                                                          | Type-check and build the frontend                    |
-| `make format`                                                                         | Format Python and frontend source                    |
-| `make format-check`                                                                   | Check formatting without changing files              |
+| `pyenv exec python manage.py test`                                                    | Python lint, backend tests, and frontend type checks |
+| `pyenv exec python manage.py build`                                                   | Type-check and build the frontend                    |
+| `pyenv exec python manage.py format`                                                  | Format Python and frontend source                    |
+| `pyenv exec python manage.py format-check`                                            | Check formatting without changing files              |
 | `backend/.venv/bin/python -m ruff check backend/app backend/migrations backend/tests` | Check Python lint rules                              |
 
 ### Browser tests
 
-Install Playwright's Chromium once after `make setup`:
+Install Playwright's Chromium once after `pyenv exec python manage.py setup`:
 
 ```bash
 cd frontend
 npx playwright install chromium
 cd ..
-make test-e2e
+pyenv exec python manage.py test-e2e
 ```
 
-On Linux or WSL, if Playwright reports missing system libraries, run
+On Linux, if Playwright reports missing system libraries, run
 `npx playwright install --with-deps chromium` from `frontend` instead; installing
 system packages may ask for sudo access.
 
@@ -215,7 +251,43 @@ cd frontend
 npx playwright show-report
 ```
 
+### Run every check in one command
+
+After installing Chromium and configuring a PostgreSQL test database, run:
+
+```text
+pyenv exec python manage.py verify-all
+```
+
+This runs formatting, lint, backend tests (including PostgreSQL concurrency), the
+frontend build, and desktop/mobile browser tests. It stops on the first failure
+and refuses to run without `TEST_DATABASE_URL`, so it cannot silently skip the
+PostgreSQL check. `verify` runs the regular checks without requiring PostgreSQL.
+`make <command>` remains an equivalent shortcut on Linux/macOS.
+
 ## 5. Optional: use PostgreSQL
+
+### Native Windows PostgreSQL (no Linux or Docker)
+
+Install PostgreSQL 16 from the official [Windows installer page](https://www.postgresql.org/download/windows/).
+Use port 5432 and remember the `postgres` administrator password. In pgAdmin, create
+an ordinary login role named `brightloop` with password `demo_only`, then create a
+`brightloop` database owned by that role. Its owner can create the isolated test schemas.
+
+In PowerShell, set the connection strings and start the app:
+
+```powershell
+$env:DATABASE_URL = "postgresql+psycopg://brightloop:demo_only@localhost:5432/brightloop"
+$env:TEST_DATABASE_URL = $env:DATABASE_URL
+pyenv exec python manage.py dev
+```
+
+Stop with Ctrl+C before running `pyenv exec python manage.py verify-all`. To switch
+back to SQLite, run `Remove-Item Env:DATABASE_URL` and start the app again.
+The native PostgreSQL server is managed by Windows Services. No database server is
+needed at all for the default SQLite setup.
+
+### Docker Compose (optional Linux / macOS alternative)
 
 The SQLite path above is sufficient to run the app. To use the provided
 PostgreSQL 16 configuration, first install Docker and its Compose plugin, then run:
@@ -229,7 +301,7 @@ Wait until the readiness command succeeds, then start the app from the same root
 
 ```bash
 export DATABASE_URL='postgresql+psycopg://brightloop:demo_only@localhost:5432/brightloop'
-make dev
+pyenv exec python manage.py dev
 ```
 
 This creates and seeds a separate PostgreSQL database; existing SQLite records are
@@ -240,26 +312,27 @@ To include the PostgreSQL concurrency test in a separate terminal:
 
 ```bash
 export TEST_DATABASE_URL='postgresql+psycopg://brightloop:demo_only@localhost:5432/brightloop'
-make test
+pyenv exec python manage.py test
 ```
 
 Use a database that permits creating and dropping test schemas. The test creates a
 unique schema and removes it afterward. To switch the development app back to
-SQLite, stop it, run `unset DATABASE_URL`, and start `make dev` again.
+SQLite, stop it, run `unset DATABASE_URL`, and start `pyenv exec python manage.py dev` again.
 
 ## Configuration
 
-Export variables in the terminal before starting the app. `.env` files are **not
+Set environment variables in the terminal before starting the app. Use
+`$env:DATABASE_URL = "..."` in PowerShell or `export DATABASE_URL='...'` in Bash/Zsh. `.env` files are **not
 loaded automatically**. No external email provider, payment key, or GitHub token is
 required to run locally.
 
-| Variable               | Default                                           | Purpose                                                       |
-| ---------------------- | ------------------------------------------------- | ------------------------------------------------------------- |
-| `DATABASE_URL`         | SQLite at `backend/brightloop.db` with `make dev` | Development database                                          |
-| `DEMO_SECRET`          | Local demo value                                  | Signs login tokens; changing it invalidates existing sessions |
-| `FRONTEND_ORIGIN`      | `http://localhost:5173`                           | API CORS origin                                               |
-| `BILLING_POLL_SECONDS` | `3600`                                            | Worker polling interval, minimum 60 seconds                   |
-| `TEST_DATABASE_URL`    | Unset                                             | Enables the PostgreSQL concurrency test                       |
+| Variable               | Default                                                                  | Purpose                                                       |
+| ---------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| `DATABASE_URL`         | SQLite at `backend/brightloop.db` with `pyenv exec python manage.py dev` | Development database                                          |
+| `DEMO_SECRET`          | Local demo value                                                         | Signs login tokens; changing it invalidates existing sessions |
+| `FRONTEND_ORIGIN`      | `http://localhost:5173`                                                  | API CORS origin                                               |
+| `BILLING_POLL_SECONDS` | `3600`                                                                   | Worker polling interval, minimum 60 seconds                   |
+| `TEST_DATABASE_URL`    | Unset                                                                    | Enables the PostgreSQL concurrency test                       |
 
 The bundled accounts, signing default, and Compose credentials are for local demo
 use. Keep personal credentials and payment secrets out of Git.
@@ -271,8 +344,8 @@ use. Keep personal credentials and payment secrets out of Git.
 - **Python compilation fails**: install the OS build libraries above and retry.
   An OpenSSL or SQLite import error usually means a build dependency was missing.
 - **`make: command not found`**: install Make or finish the macOS command line tools
-  installation; on Windows, run the commands inside WSL.
-- **Missing Python or npm packages**: run `make setup` again. Do not reuse a virtual
+  installation; use the Python command runner on Windows; Make is optional.
+- **Missing Python or npm packages**: run `pyenv exec python manage.py setup` again. Do not reuse a virtual
   environment or `node_modules` copied from another computer.
 - **Address already in use**: stop the old preview process, or the service using
   5173/8001. Browser tests separately require 5175/8003.
@@ -280,9 +353,9 @@ use. Keep personal credentials and payment secrets out of Git.
   wait for `pg_isready` to succeed.
 - **Demo password no longer works**: existing databases retain account changes.
   Use password reset and the admin outbox. For a fresh SQLite demo, stop all app
-  processes, move `backend/brightloop.db` to a backup location, and run `make dev`.
+  processes, move `backend/brightloop.db` to a backup location, and run `pyenv exec python manage.py dev`.
   This starts a new database; your records remain only in the backup.
-- **Preview cannot reach the API**: start with `make dev`, check both services'
+- **Preview cannot reach the API**: start with `pyenv exec python manage.py dev`, check both services'
   terminal output, and use the frontend URL on port 5173.
 
 ## Code layout
@@ -293,6 +366,6 @@ use. Keep personal credentials and payment secrets out of Git.
 - `backend/tests`: API, domain, scale, and concurrency tests.
 - `frontend/src`: React screens, forms, shared controls, and application styles.
 - `frontend/tests`: desktop/mobile browser tests and their development proxy.
-- `Makefile`, `.python-version`, and dependency lockfiles: repeatable local commands
+- `manage.py`, `Makefile`, `.python-version`, and dependency lockfiles: repeatable local commands
   and dependency setup.
 - `compose.yaml`: optional PostgreSQL service.
