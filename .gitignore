@@ -1,3 +1,10 @@
 dist/
 wireframes/.browser-smoke.html
 *.core
+backend/.venv/
+backend/*.db
+backend/uv.lock
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+.env

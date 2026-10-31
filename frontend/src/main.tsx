@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 type User = {id:number;name:string;email:string;role:'admin'|'staff'|'customer'};
-type Row = Record<string, unknown> & {id:number;number?:string;name?:string;status?:string;version?:number};
+type Row = Record<string, any> & {id:number;number?:string;name?:string;status?:string;version?:number};
 const routes = ['overview','customers','products','plans','tax-rules','discount-rules','quotation-templates','subscriptions','billing-runs','invoices','payments','reports','requests','outbox'];
 const titles:Record<string,string> = {'overview':'Overview','customers':'Customers','products':'Products','plans':'Plans','tax-rules':'Tax rules','discount-rules':'Discount rules','quotation-templates':'Quotation templates','subscriptions':'Subscriptions','billing-runs':'Billing runs','invoices':'Invoices','payments':'Payments','reports':'Reports','requests':'Customer requests','outbox':'Demo outbox'};
 const fields:Record<string,string[]> = {'products':['name','type','sales_price','cost_price','currency','notes'], 'plans':['name','price','currency','billing_interval','minimum_quantity','available_from','available_until','allow_pause','allow_early_close','allow_renewal','auto_close'], 'tax-rules':['name','rate_percent','effective_from','effective_until','country','region'], 'discount-rules':['name','kind','value','minimum_purchase','minimum_quantity','starts_on','ends_on','usage_limit','scope'], 'quotation-templates':['name','plan_id','validity_days','lines'], 'subscriptions':['customer_id','plan_id','start_date','expiry_date','payment_terms_days','lines']};
