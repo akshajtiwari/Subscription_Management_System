@@ -28,6 +28,11 @@ def test_demo_seed_is_idempotent_and_keeps_the_overview_and_ledger_consistent(ap
         assert report["overview"]["currencies"]["USD"]["collections"] == "248600.00"
         assert report["overview"]["currencies"]["USD"]["outstanding"] == "38400.00"
         assert report["overview"]["currencies"]["USD"]["overdue_invoice_count"] == 24
+        history = report_snapshot(session, "2026-08-01", "2026-10-31")["series"]
+        usd = [point for point in history if point["currency"] == "USD"]
+        assert [point["collections"] for point in usd] == ["190400.00", "221800.00", "248600.00"]
+        assert [point["outstanding"] for point in usd] == ["45200.00", "41200.00", "38400.00"]
+        assert [point["overdue_invoice_count"] for point in usd] == [16, 19, 24]
         invoice = session.scalar(select(Invoice).where(Invoice.number == "INV-2048"))
         assert invoice.snapshot["total"] == "1320.00"
         assert invoice.snapshot["discount_total"] == "200.00"

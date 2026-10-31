@@ -368,16 +368,38 @@ def seed():
             (6, 167800),
             (7, 182400),
             (8, 190400),
-            (9, 221800),
-            (10, 247000),
+            (9, 176600),
+            (10, 207000),
         ]:
             start = f"2026-{month:02d}-01"
             historical = invoice(f"INV-DEMO-2026-{month:02d}", bulk[0], total, start, start, "paid")
             payment(historical, total, f"2026-{month:02d}-28", "Fictional monthly collection")
+        for index in range(16):
+            total = 3200 if index == 15 else 2800
+            historical = invoice(
+                f"INV-DEMO-AUG-{index + 1:02d}",
+                bulk[index + 100],
+                total,
+                "2026-08-01",
+                "2026-08-15",
+                "paid",
+            )
+            payment(historical, total, "2026-09-28", "Fictional August settlement")
+        for index in range(18):
+            total = 2600 if index == 17 else 2200
+            historical = invoice(
+                f"INV-DEMO-SEP-{index + 1:02d}",
+                bulk[index + 120],
+                total,
+                "2026-09-01",
+                "2026-09-15",
+                "paid",
+            )
+            payment(historical, total, "2026-10-28", "Fictional September settlement")
         paid = invoice("INV-2046", bakery_active, 1200, "2026-09-01", "2026-09-15", "paid")
         payment(paid, 1200, "2026-10-28", "Fictional customer payment")
         for index in range(23):
-            total = 1600 if index == 0 else 1080 if index == 1 else 1200
+            total = 1600 if index == 0 else 1200
             bill = invoice(
                 f"INV-DEMO-OVERDUE-{index + 1:02d}",
                 bulk[index + 1],
@@ -415,7 +437,7 @@ def seed():
             date(2026, 10, 1),
             {"country": "US"},
         )
-        invoice("INV-2047", bakery_active, 1320, "2026-10-01", "2026-10-15", snapshot=snapshot)
+        invoice("INV-2047", bakery_active, 1200, "2026-10-01", "2026-10-15")
         invoice("INV-2048", primary, 1320, "2026-11-01", "2026-11-15", "draft", snapshot=snapshot)
         record(
             "billing-runs",

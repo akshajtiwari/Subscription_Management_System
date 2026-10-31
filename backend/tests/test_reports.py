@@ -76,6 +76,17 @@ def test_reports_use_payment_dates_and_share_one_currency_snapshot(api):
     assert report["overview"]["currencies"]["USD"]["outstanding"] == "75.00"
     assert report["overview"]["currencies"]["EUR"]["outstanding"] == "48.00"
     assert len(report["overdue"]) == 2
+    january = next(point for point in report["series"] if point["currency"] == "USD")
+    assert january["outstanding"] == "90.00"
+    assert january["overdue_invoice_count"] == 1
+    history = client.get(
+        "/api/v1/reports/summary?start=2020-01-01&end=2020-02-29", headers=headers["staff"]
+    ).json()["series"]
+    february = next(
+        point for point in history if point["currency"] == "USD" and point["period"] == "2020-02"
+    )
+    assert february["outstanding"] == "75.00"
+    assert february["collections"] == "15.00"
     for currency, values in report["overview"]["currencies"].items():
         assert sum(
             float(point["collections"])

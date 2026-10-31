@@ -1,3 +1,4 @@
+import calendar
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -32,6 +33,7 @@ def build_report(session, start, end):
         )
     )
     paid_by_invoice = {}
+    dated_payments = {}
     currencies = {}
     points = {}
 
@@ -52,6 +54,7 @@ def build_report(session, start, end):
             paid_by_invoice.get(payment.invoice_id, Decimal(0)) + value
         )
         paid_on = date.fromisoformat(payment.paid_at[:10])
+        dated_payments.setdefault(payment.invoice_id, []).append((paid_on, value))
         if start and paid_on < start or end and paid_on > end:
             continue
         bucket(payment.currency)["collections"] += value
@@ -114,10 +117,52 @@ def build_report(session, start, end):
         },
         "as_of": as_of.isoformat(),
     }
-    series = [
-        {"period": period, "currency": currency, "collections": str(value)}
-        for (period, currency), value in sorted(points.items())
-    ]
+    historical = list(
+        session.scalars(select(Invoice).where(Invoice.status.in_(["confirmed", "paid"])))
+    )
+    for invoice in historical:
+        due = date.fromisoformat(invoice.due_on)
+        if (not start or due >= start) and (not end or due <= end):
+            points.setdefault(
+                (invoice.due_on[:7], invoice.snapshot["currency"]),
+                money(0, invoice.snapshot["currency"]),
+            )
+    series = []
+    for (period, currency), value in sorted(points.items()):
+        year, month = map(int, period.split("-"))
+        cutoff = min(
+            date(year, month, calendar.monthrange(year, month)[1]), end or date.max, as_of.date()
+        )
+        outstanding, overdue_amount, overdue_count = money(0, currency), money(0, currency), 0
+        if cutoff >= date(year, month, 1):
+            for invoice in historical:
+                if invoice.snapshot["currency"] != currency or invoice.due_on > cutoff.isoformat():
+                    continue
+                paid = sum(
+                    (
+                        amount
+                        for paid_on, amount in dated_payments.get(invoice.id, [])
+                        if paid_on <= cutoff
+                    ),
+                    money(0, currency),
+                )
+                balance = money(invoice.snapshot["total"], currency) - paid
+                if balance <= 0:
+                    continue
+                outstanding += balance
+                if invoice.due_on < cutoff.isoformat():
+                    overdue_amount += balance
+                    overdue_count += 1
+        series.append(
+            {
+                "period": period,
+                "currency": currency,
+                "collections": str(value),
+                "outstanding": str(outstanding),
+                "overdue_amount": str(overdue_amount),
+                "overdue_invoice_count": overdue_count,
+            }
+        )
     return {
         "overview": overview,
         "series": series,
