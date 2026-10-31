@@ -371,6 +371,8 @@ def create_record(kind: str, body: Payload, user: User = Depends(current), sessi
 def read_record(kind: str, record_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
     if kind not in KINDS:
         fail("not_found", 404)
+    if user.role == "customer" and kind not in {"subscriptions", "requests"}:
+        fail("forbidden", 403)
     return record_json(get_record(session, kind, record_id, user))
 
 
@@ -421,6 +423,12 @@ def customer_request(record_id: int, body: dict, user: User = Depends(current), 
     subscription = get_record(session, "subscriptions", record_id, user)
     if body.get("action") not in {"add_on", "pause", "resume", "renew", "close"}:
         fail("invalid_action")
+    plan = session.get(Record, subscription.payload["plan_id"])
+    permission = {"pause": "allow_pause", "renew": "allow_renewal", "close": "allow_early_close"}.get(body["action"])
+    if permission and (not plan or not plan.payload.get(permission)):
+        fail("plan_disallows_action", 409)
+    if body["action"] == "resume" and subscription.status != "paused" or body["action"] == "pause" and subscription.status != "active":
+        fail("invalid_transition", 409)
     request = Record(kind="requests", number=f"REQ-{secrets.token_hex(4).upper()}", owner_id=user.id, status="pending", payload={"subscription_id": subscription.id, **body})
     session.add(request)
     session.commit()
