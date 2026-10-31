@@ -20,6 +20,7 @@ worker:
 	cd backend && .venv/bin/python -m app.worker
 
 test:
+	cd backend && .venv/bin/python -m ruff check app migrations tests
 	cd backend && .venv/bin/python -m pytest
 	npm --prefix frontend run lint
 

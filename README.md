@@ -176,18 +176,18 @@ Do not start a second instance while another one is using the same ports.
 make verify
 ```
 
-This runs formatting checks, backend tests, frontend type checks, and the production
+This runs formatting checks, Python lint, backend tests, frontend type checks, and the production
 frontend build. The generated frontend files are in `frontend/dist`. Backend tests
 use isolated databases; they do not modify your development records. The PostgreSQL
 concurrency check is skipped unless `TEST_DATABASE_URL` is configured.
 
-| Command                                                                               | Purpose                                 |
-| ------------------------------------------------------------------------------------- | --------------------------------------- |
-| `make test`                                                                           | Backend tests and frontend type checks  |
-| `make build`                                                                          | Type-check and build the frontend       |
-| `make format`                                                                         | Format Python and frontend source       |
-| `make format-check`                                                                   | Check formatting without changing files |
-| `backend/.venv/bin/python -m ruff check backend/app backend/migrations backend/tests` | Check Python lint rules                 |
+| Command                                                                               | Purpose                                              |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `make test`                                                                           | Python lint, backend tests, and frontend type checks |
+| `make build`                                                                          | Type-check and build the frontend                    |
+| `make format`                                                                         | Format Python and frontend source                    |
+| `make format-check`                                                                   | Check formatting without changing files              |
+| `backend/.venv/bin/python -m ruff check backend/app backend/migrations backend/tests` | Check Python lint rules                              |
 
 ### Browser tests
 
