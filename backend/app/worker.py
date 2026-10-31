@@ -1,6 +1,7 @@
-"""Daily fictional billing runner. Run as a separate process in a demo deployment."""
+"""Hourly fictional billing runner with idempotent retries."""
 
 import os
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -23,5 +24,8 @@ def run_once():
 if __name__ == "__main__":
     interval = max(int(os.getenv("BILLING_POLL_SECONDS", "3600")), 60)
     while True:
-        print(run_once(), flush=True)
+        try:
+            print(run_once(), flush=True)
+        except Exception:
+            logging.exception("Billing run failed; retrying at the next poll")
         time.sleep(interval)
