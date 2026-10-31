@@ -11,7 +11,8 @@ from decimal import Decimal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DbSession
@@ -19,8 +20,27 @@ from sqlalchemy.orm import Session as DbSession
 from .db import Event, Idempotency, Invoice, Payment, Record, Session, User, init_db
 from .rules import invoice_amount, invoice_balance, money, next_date
 from .pdf import invoice_pdf
+from .schemas import PaymentInput, SCHEMAS, parse_record
 
 app = FastAPI(title="Brightloop demo API", version="1.0")
+
+
+@app.exception_handler(ValidationError)
+async def domain_validation_error(request, exc):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": "validation_error",
+                "fields": [
+                    {"field": ".".join(map(str, error["loc"])), "message": error["msg"]}
+                    for error in exc.errors()
+                ],
+            }
+        },
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")],
@@ -138,17 +158,20 @@ def public_user(user):
 
 def record_json(record):
     return {
+        **record.payload,
         "id": record.id,
         "number": record.number,
         "status": record.status,
         "owner_id": record.owner_id,
         "version": record.version,
-        **record.payload,
     }
 
 
-def get_record(session, kind, record_id, user):
-    record = session.get(Record, record_id)
+def get_record(session, kind, record_id, user, lock=False):
+    query = select(Record).where(Record.id == record_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    record = session.scalar(query)
     if (
         record is None
         or record.kind != kind
@@ -315,7 +338,7 @@ def catalog_items(
     ):
         data = product.payload
         currency = data.get("currency", "USD")
-        base = money(data.get("sales_price", "0"))
+        base = money(data.get("sales_price", "0"), currency)
         rows.append(
             {
                 "product_id": product.id,
@@ -335,7 +358,9 @@ def catalog_items(
                         "name": data.get("name", ""),
                         "variant_name": variant.get("name", ""),
                         "sku": variant.get("sku", ""),
-                        "unit_price": str(base + money(variant.get("price_adjustment", "0"))),
+                        "unit_price": str(
+                            base + money(variant.get("price_adjustment", "0"), currency)
+                        ),
                         "currency": currency,
                     }
                 )
@@ -363,6 +388,14 @@ def resolved_subscription(session, payload):
         or plan.status != "active"
     ):
         fail("missing_subscription_fields")
+    if (
+        plan.payload.get("available_from")
+        and payload["start_date"] < plan.payload["available_from"]
+    ) or (
+        plan.payload.get("available_until")
+        and payload["start_date"] > plan.payload["available_until"]
+    ):
+        fail("plan_unavailable")
     if not payload.get("lines") or date.fromisoformat(payload["start_date"]) > date.fromisoformat(
         payload["expiry_date"]
     ):
@@ -397,8 +430,8 @@ def resolved_subscription(session, payload):
                 fail("catalog_item_unavailable")
             if not variant.get("active", True):
                 fail("catalog_item_unavailable")
-        price = money(product.payload.get("sales_price", 0)) + money(
-            variant.get("price_adjustment", 0) if variant else 0
+        price = money(product.payload.get("sales_price", 0), currency) + money(
+            variant.get("price_adjustment", 0) if variant else 0, currency
         )
         if price < 0:
             fail("invalid_price")
@@ -423,11 +456,38 @@ def resolved_subscription(session, payload):
     }
 
 
+def validate_references(session, kind, payload, user):
+    if kind == "quotation-templates":
+        plan = get_record(session, "plans", payload["plan_id"], user)
+        if plan.status != "active":
+            fail("plan_unavailable")
+        for line in payload["lines"]:
+            product = get_record(session, "products", line["product_id"], user)
+            if (
+                product.status != "active"
+                or product.payload["currency"] != plan.payload["currency"]
+            ):
+                fail("catalog_item_unavailable")
+            if line.get("variant_id") is not None and line["variant_id"] >= len(
+                product.payload.get("variants", [])
+            ):
+                fail("catalog_item_unavailable")
+    if kind == "discount-rules":
+        for product_id in payload["product_ids"]:
+            get_record(session, "products", product_id, user)
+
+
 def invoice_json(invoice, session):
     payments = list(session.scalars(select(Payment).where(Payment.invoice_id == invoice.id)))
-    balance = invoice_balance(invoice.snapshot["total"], [p.amount for p in payments])
-    paid = money(balance["amount_paid"])
-    due = money(balance["amount_due"]) if invoice.status != "canceled" else Decimal(0)
+    balance = invoice_balance(
+        invoice.snapshot["total"], [p.amount for p in payments], invoice.snapshot["currency"]
+    )
+    paid = money(balance["amount_paid"], invoice.snapshot["currency"])
+    due = (
+        money(balance["amount_due"], invoice.snapshot["currency"])
+        if invoice.status != "canceled"
+        else Decimal(0)
+    )
     return {
         "id": invoice.id,
         "number": invoice.number,
@@ -703,13 +763,14 @@ def add_payment(
         if previous.action != fingerprint:
             fail("idempotency_conflict", 409)
         return previous.result
+    body = PaymentInput.model_validate(body).model_dump(mode="json")
     invoice = get_invoice(session, invoice_id, user)
     current_invoice = invoice_json(invoice, session)
-    amount = money(body.get("amount", "0"))
+    amount = money(body.get("amount", "0"), body["currency"])
     if (
         invoice.status != "confirmed"
         or amount <= 0
-        or amount > money(current_invoice["amount_due"])
+        or amount > money(current_invoice["amount_due"], current_invoice["currency"])
         or body.get("currency") != current_invoice["currency"]
     ):
         fail("invalid_payment")
@@ -723,7 +784,7 @@ def add_payment(
     )
     session.add(payment)
     session.flush()
-    if amount == money(current_invoice["amount_due"]):
+    if amount == money(current_invoice["amount_due"], current_invoice["currency"]):
         invoice.status = "paid"
     invoice.version += 1
     result = invoice_json(invoice, session)
@@ -814,9 +875,9 @@ def report(
                 "overdue_invoice_count": 0,
             },
         )
-        bucket["outstanding"] += money(row["amount_due"])
+        bucket["outstanding"] += money(row["amount_due"], currency)
         if row["overdue"]:
-            bucket["overdue_amount"] += money(row["amount_due"])
+            bucket["overdue_amount"] += money(row["amount_due"], currency)
             bucket["overdue_invoice_count"] += 1
     for payment in session.scalars(select(Payment)):
         paid_on = payment.paid_at[:10]
@@ -831,7 +892,7 @@ def report(
                 "overdue_invoice_count": 0,
             },
         )
-        bucket["collections"] += money(payment.amount)
+        bucket["collections"] += money(payment.amount, payment.currency)
     return {
         "active_subscriptions": session.query(Record)
         .filter(Record.kind == "subscriptions", Record.status == "active")
@@ -858,7 +919,7 @@ def collections_series(
         if start and paid_on < start or end and paid_on > end:
             continue
         key = (paid_on[:7], payment.currency)
-        points[key] = points.get(key, Decimal(0)) + money(payment.amount)
+        points[key] = points.get(key, Decimal(0)) + money(payment.amount, payment.currency)
     return {
         "data": [
             {"period": period, "currency": currency, "collections": str(points[(period, currency)])}
@@ -942,14 +1003,15 @@ def create_record(
     allowed(
         user, "admin" if kind in ADMIN_ONLY else "admin", *([] if kind in ADMIN_ONLY else ["staff"])
     )
-    payload = body.payload.copy()
+    payload = parse_record(kind, body.payload)
+    validate_references(session, kind, payload, user)
     if kind == "subscriptions":
         payload = resolved_subscription(session, payload)
         owner_id = payload["customer_id"]
         status = "draft"
     else:
         owner_id = None
-        status = "active"
+        status = "active" if payload.get("active", True) else "inactive"
     record = Record(
         kind=kind,
         number=f"{kind[:3].upper()}-{secrets.token_hex(4).upper()}",
@@ -984,15 +1046,32 @@ def update_record(
     user: User = Depends(current),
     session: DbSession = Depends(db),
 ):
+    if kind not in SCHEMAS:
+        fail("forbidden", 403)
     allowed(
         user, "admin" if kind in ADMIN_ONLY else "admin", *([] if kind in ADMIN_ONLY else ["staff"])
     )
-    record = get_record(session, kind, record_id, user)
+    record = get_record(session, kind, record_id, user, lock=True)
     check_version(record.version, if_match)
     if kind == "subscriptions" and record.status != "draft":
         fail("invalid_transition", 409)
-    merged = {**record.payload, **body.payload}
+    fields = SCHEMAS[kind].model_fields
+    extra_fields = set(body.payload) - fields.keys()
+    if extra_fields:
+        fail("unknown_fields")
+    usage_count = int(record.payload.get("usage_count", 0))
+    merged = parse_record(
+        kind,
+        {**{key: value for key, value in record.payload.items() if key in fields}, **body.payload},
+    )
+    validate_references(session, kind, merged, user)
     record.payload = resolved_subscription(session, merged) if kind == "subscriptions" else merged
+    if kind == "discount-rules":
+        record.payload = {**record.payload, "usage_count": usage_count}
+    if kind == "subscriptions":
+        record.owner_id = record.payload["customer_id"]
+    if kind != "subscriptions":
+        record.status = "active" if record.payload.get("active", True) else "inactive"
     record.version += 1
     event(session, kind, record.id, "updated", user.id)
     session.commit()

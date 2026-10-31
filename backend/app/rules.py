@@ -2,9 +2,13 @@ import calendar
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from .currencies import CURRENCY_DIGITS
 
-def money(value):
-    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+def money(value, currency="USD"):
+    return Decimal(str(value)).quantize(
+        Decimal(1).scaleb(-CURRENCY_DIGITS[currency]), rounding=ROUND_HALF_UP
+    )
 
 
 def next_date(start: date, interval: str, anchor_day: int | None = None):
@@ -17,9 +21,9 @@ def next_date(start: date, interval: str, anchor_day: int | None = None):
     return date(year, month, min(anchor_day or start.day, calendar.monthrange(year, month)[1]))
 
 
-def invoice_balance(total, payments):
-    paid = sum((money(amount) for amount in payments), Decimal(0))
-    due = money(total) - paid
+def invoice_balance(total, payments, currency="USD"):
+    paid = sum((money(amount, currency) for amount in payments), Decimal(0))
+    due = money(total, currency) - paid
     if due < 0:
         raise ValueError("payment_exceeds_total")
     return {"amount_paid": str(paid), "amount_due": str(due)}
@@ -28,17 +32,19 @@ def invoice_balance(total, payments):
 def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
     jurisdiction = jurisdiction or {}
     currency = plan["currency"]
-    plan_fee = money(plan["price"])
+    plan_fee = money(plan["price"], currency)
     resolved = []
     subtotal = plan_fee
     for line in lines:
         if line["currency"] != currency:
             raise ValueError("currency_mismatch")
-        amount = money(money(line["unit_price"]) * int(line["quantity"]))
+        amount = money(Decimal(line["unit_price"]) * int(line["quantity"]), currency)
         subtotal += amount
         resolved.append({**line, "amount": str(amount)})
     eligible = []
     for rule in discounts:
+        if rule.get("currency", currency) != currency:
+            continue
         if (
             not rule.get("active", True)
             or on.isoformat() < rule["starts_on"]
@@ -50,7 +56,7 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
             and rule.get("usage_count", 0) >= rule["usage_limit"]
         ):
             continue
-        if subtotal < money(rule.get("minimum_purchase", 0)) or sum(
+        if subtotal < money(rule.get("minimum_purchase", 0), currency) or sum(
             int(x["quantity"]) for x in lines
         ) < int(rule.get("minimum_quantity", 0)):
             continue
@@ -59,7 +65,7 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
             if rule.get("scope") != "products"
             else sum(
                 (
-                    money(x["amount"])
+                    money(x["amount"], currency)
                     for x in resolved
                     if x.get("product_id") in rule.get("product_ids", [])
                 ),
@@ -67,13 +73,14 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
             )
         )
         reduction = (
-            money(base * money(rule["value"]) / 100)
+            money(base * Decimal(rule["value"]) / 100, currency)
             if rule["kind"] == "percentage"
-            else money(rule["value"])
+            else money(rule["value"], currency)
         )
-        eligible.append((min(base, reduction), str(rule.get("id", "")), rule))
+        if base > 0:
+            eligible.append((min(base, reduction), str(rule.get("id", "")), rule))
     discount, _, chosen = (
-        max(eligible, key=lambda x: (x[0], x[1])) if eligible else (Decimal(0), "", None)
+        min(eligible, key=lambda x: (-x[0], x[1])) if eligible else (Decimal(0), "", None)
     )
     taxable = subtotal - discount
     tax_breakdown = []
@@ -96,10 +103,10 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
             {
                 "name": tax.get("name", "Tax"),
                 "rate_percent": tax["rate_percent"],
-                "amount": str(money(taxable * money(tax["rate_percent"]) / 100)),
+                "amount": str(money(taxable * Decimal(tax["rate_percent"]) / 100, currency)),
             }
         )
-    tax_total = sum((money(tax["amount"]) for tax in tax_breakdown), Decimal(0))
+    tax_total = sum((money(tax["amount"], currency) for tax in tax_breakdown), Decimal(0))
     return {
         "currency": currency,
         "plan_fee": str(plan_fee),
