@@ -7,19 +7,26 @@ from sqlalchemy import select
 from .db import Event, Invoice, Payment, Record, Session, User, init_db
 from .main import hash_password
 from .rules import invoice_amount, next_date, term_length
+from .seed_workspace import populate_workspace
 
 
-def seed():
+def seed(as_of=None):
     init_db()
     with Session() as session:
         users = {user.email: user for user in session.scalars(select(User))}
         passwords = {}
 
-        def person(email, name, role, password):
+        def person(email, name, role, password, active=True):
             if email not in users:
                 if password not in passwords:
                     passwords[password] = hash_password(password)
-                user = User(name=name, email=email, role=role, password_hash=passwords[password])
+                user = User(
+                    name=name,
+                    email=email,
+                    role=role,
+                    password_hash=passwords[password],
+                    active=active,
+                )
                 session.add(user)
                 session.flush()
                 users[email] = user
@@ -476,6 +483,7 @@ def seed():
                     },
                 )
             )
+        populate_workspace(session, person, record, bakery, admin, staff, as_of or date.today())
         session.commit()
 
 
