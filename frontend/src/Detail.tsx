@@ -459,7 +459,16 @@ export function Detail({
               </button>,
             ],
             ['Action', label(row.action)],
-            ['Product', row.product_id ? `Product ${row.product_id}` : '—'],
+            [
+              'Product',
+              row.proposed_line?.name || (row.product_id ? `Product ${row.product_id}` : '—'),
+            ],
+            [
+              'Unit price',
+              row.proposed_line
+                ? amount(row.proposed_line.unit_price, row.proposed_line.currency)
+                : '—',
+            ],
             ['Quantity', row.action === 'add_on' ? row.quantity : '—'],
           ]}
         />

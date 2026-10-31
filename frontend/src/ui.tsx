@@ -1,4 +1,12 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import {
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useId,
+  useRef,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 
 export const label = (value: string) =>
   value
@@ -80,12 +88,32 @@ export function Field({
   children: ReactNode;
   wide?: boolean;
 }) {
+  const generatedId = useId();
+  const control = isValidElement(children)
+    ? (children as ReactElement<{
+        id?: string;
+        'aria-describedby'?: string;
+        'aria-invalid'?: boolean;
+      }>)
+    : null;
+  const id = control?.props.id || generatedId;
+  const errorId = `${id}-error`;
   return (
-    <label className={`field ${wide ? 'field-wide' : ''}`}>
-      <span>{name}</span>
-      {children}
-      {error && <small className="field-error">{error}</small>}
-    </label>
+    <div className={`field ${wide ? 'field-wide' : ''}`}>
+      <label htmlFor={id}>{name}</label>
+      {control
+        ? cloneElement(control, {
+            id,
+            'aria-invalid': Boolean(error) || control.props['aria-invalid'],
+            'aria-describedby': error ? errorId : control.props['aria-describedby'],
+          })
+        : children}
+      {error && (
+        <small id={errorId} className="field-error">
+          {error}
+        </small>
+      )}
+    </div>
   );
 }
 

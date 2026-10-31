@@ -170,6 +170,10 @@ export function Editor({
   const [picker, setPicker] = useState(false);
   const [key] = useState(crypto.randomUUID());
   const [retry, setRetry] = useState(0);
+  const [customerSearch, setCustomerSearch] = useState(''),
+    [customerMatches, setCustomerMatches] = useState<Row[]>([]),
+    [customerBusy, setCustomerBusy] = useState(false),
+    [selectedCustomer, setSelectedCustomer] = useState<Row | null>(initial?.customer || null);
   const set = (name: string, value: any) =>
     setDraft((current) => ({
       ...current,
@@ -178,6 +182,38 @@ export function Editor({
     }));
   const plan = references.plans?.find((row) => row.id === Number(draft.plan_id));
   const currency = plan?.currency || draft.currency || 'USD';
+  const customerOptions = customerSearch ? customerMatches : references.customers || [];
+  const customers =
+    selectedCustomer && !customerOptions.some((row) => row.id === selectedCustomer.id)
+      ? [selectedCustomer, ...customerOptions]
+      : customerOptions;
+  useEffect(() => {
+    if (kind !== 'subscriptions' || !customerSearch) {
+      setCustomerMatches([]);
+      setCustomerBusy(false);
+      return;
+    }
+    const controller = new AbortController();
+    setCustomerBusy(true);
+    const timer = setTimeout(
+      () =>
+        request(`customers?limit=100&search=${encodeURIComponent(customerSearch)}`, token, {
+          signal: controller.signal,
+        })
+          .then((result) => setCustomerMatches(result.data))
+          .catch((cause) => {
+            if (cause.name !== 'AbortError') setError(cause.message);
+          })
+          .finally(() => {
+            if (!controller.signal.aborted) setCustomerBusy(false);
+          }),
+      250,
+    );
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [customerSearch, kind, token]);
   useEffect(() => {
     const names =
       kind === 'subscriptions'
@@ -216,8 +252,13 @@ export function Editor({
     const attrs = {
       value: draft[name] ?? '',
       'aria-invalid': Boolean(errors[name]),
-      onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
-        set(name, event.target.value),
+      onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+        if (name === 'customer_id')
+          setSelectedCustomer(
+            customers.find((row) => row.id === Number(event.target.value)) || null,
+          );
+        set(name, event.target.value);
+      },
       disabled: busy,
     };
     return (
@@ -560,11 +601,20 @@ export function Editor({
             <>
               {kind === 'subscriptions' && (
                 <>
+                  <Field name="Find customer">
+                    <input
+                      type="search"
+                      placeholder="Customer name or email"
+                      value={customerSearch}
+                      onChange={(event) => setCustomerSearch(event.target.value)}
+                    />
+                  </Field>
+                  {customerBusy && <Loading />}
                   {field(
                     'customer_id',
                     'Customer',
                     'text',
-                    (references.customers || []).map((row) => ({
+                    customers.map((row) => ({
                       value: row.id,
                       title: `${row.name} · ${row.email}`,
                     })),
@@ -705,7 +755,7 @@ export function Editor({
           <button type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="primary" disabled={busy || loading}>
+          <button className="primary" disabled={busy || loading || customerBusy}>
             {busy ? 'Saving…' : 'Save'}
           </button>
         </div>

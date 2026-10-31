@@ -537,7 +537,14 @@ export function App() {
           onClick={() => setMobileOpen(false)}
         />
       )}
-      <aside ref={sidebar} id="sidebar" className="sidebar" aria-label="Main navigation">
+      <aside
+        ref={sidebar}
+        id="sidebar"
+        className="sidebar"
+        aria-label="Main navigation"
+        inert={!expanded}
+        aria-hidden={!expanded}
+      >
         <div className="brand">
           <span className="brand-symbol">b·</span>
           <strong>brightloop</strong>

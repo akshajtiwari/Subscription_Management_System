@@ -423,6 +423,7 @@ td button {
   font-weight: 550;
   min-width: 0;
 }
+.field > label,
 .field > span {
   line-height: 1.4;
 }
