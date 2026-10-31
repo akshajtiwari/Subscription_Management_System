@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from .db import Event, Idempotency, Invoice, Payment, Record, Session, User, init_db
 from .rules import invoice_amount, money, next_date
+from .pdf import invoice_pdf
 
 app = FastAPI(title="Brightloop demo API", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -333,6 +334,15 @@ def my_invoice(invoice_id: int, user: User = Depends(current), session: DbSessio
 @app.get("/api/v1/invoices/{invoice_id}")
 def invoice_detail(invoice_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
     return invoice_json(get_invoice(session, invoice_id, user), session)
+
+
+@app.get("/api/v1/invoices/{invoice_id}/pdf")
+def download_invoice(invoice_id: int, user: User = Depends(current), session: DbSession = Depends(db)):
+    invoice = get_invoice(session, invoice_id, user)
+    if invoice.status == "draft" or invoice.status == "canceled":
+        fail("invoice_unavailable", 409)
+    content = invoice_pdf(invoice_json(invoice, session))
+    return Response(content=content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{invoice.number}.pdf"'})
 
 
 @app.post("/api/v1/invoices/{invoice_id}/payments", status_code=201)
