@@ -148,14 +148,22 @@ pip, installs the backend in editable mode, and installs frontend dependencies w
 `npm ci`. You do not need to activate the virtual environment. The first setup
 requires internet access and may take several minutes on Linux/macOS while Python compiles. pyenv-win installs a native Windows Python build.
 
-## 3. Start the app
+## 3. Populate demo data and start the app
 
-```bash
+From the repository root, populate the database, then start the app:
+
+```text
+pyenv exec python manage.py seed
 pyenv exec python manage.py dev
 ```
 
-This command applies database migrations, adds missing fictional demo records, and starts all
-three processes:
+These commands work in native Windows PowerShell, Bash, and Zsh. `seed` applies
+database migrations, adds the fictional demo records, and exits. A successful run
+may produce no output; **exit code 0 means it completed successfully**. It does not
+start a server. Existing records, edits, and passwords are preserved when seeding
+again.
+
+`dev` also adds missing demo records automatically and starts all three processes:
 
 | Process           | Address / behavior                                       |
 | ----------------- | -------------------------------------------------------- |
@@ -209,6 +217,11 @@ the repository root, then refresh the browser:
 ```text
 pyenv exec python manage.py seed
 ```
+
+This command can also refresh the data while the development server is running.
+Wait for it to finish, then reload Overview, Reports, or the relevant list in the
+browser to see the new records and charts. Keep the same `DATABASE_URL` setting as
+the server if you configured a custom database.
 
 The API and seed command use the same default database regardless of the terminal's
 working directory. `DATABASE_URL` still selects a custom database when configured.
