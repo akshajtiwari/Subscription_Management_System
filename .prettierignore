@@ -3,3 +3,5 @@ backend/
 **/dist/
 **/.venv/
 **/__pycache__/
+**/playwright-report/
+**/test-results/
