@@ -1,18 +1,35 @@
-import { useState, type FormEvent } from 'react';
-import { request, type User } from './api';
+import { useId, useState, type FormEvent } from 'react';
+import { ApiError, request, type User } from './api';
+import { ErrorBox } from './ui';
 
-type Props = { onLogin: (token: string, user: User) => void };
+type Props = { onLogin: (token: string, user: User) => void; initialResetToken?: string };
+type Mode = 'login' | 'register' | 'reset' | 'confirm';
 
-export function Auth({ onLogin }: Props) {
-  const [mode, setMode] = useState<'login' | 'register' | 'reset' | 'confirm'>('login');
+export function Auth({ onLogin, initialResetToken = '' }: Props) {
+  const passwordId = useId();
+  const [mode, setMode] = useState<Mode>(initialResetToken ? 'confirm' : 'login');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('admin@brightloop.demo');
-  const [password, setPassword] = useState('DemoAdmin!1');
-  const [resetToken, setResetToken] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-
+  const [email, setEmail] = useState(initialResetToken ? '' : 'admin@brightloop.demo');
+  const [password, setPassword] = useState(initialResetToken ? '' : 'DemoAdmin!1');
+  const [resetToken, setResetToken] = useState(initialResetToken);
+  const [show, setShow] = useState(false),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(''),
+    [message, setMessage] = useState('');
+  const rules = [
+    ['More than eight characters', password.length > 8],
+    ['An uppercase letter', /\p{Lu}/u.test(password)],
+    ['A lowercase letter', /\p{Ll}/u.test(password)],
+    ['A special character', /[^\p{L}\p{N}\s]/u.test(password)],
+  ] as const;
+  function changeMode(next: Mode) {
+    setMode(next);
+    setError('');
+    setMessage('');
+    setShow(false);
+    if (next !== 'login') setPassword('');
+    if (next === 'register') setEmail('');
+  }
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -38,25 +55,32 @@ export function Auth({ onLogin }: Props) {
           body: JSON.stringify({ email }),
         });
         setMode('confirm');
-        setMessage('Reset requested. Find the demo link in the staff outbox.');
+        setMessage('Reset requested. Find the link in the demo outbox.');
       } else {
         await request('auth/password-resets/confirm', '', {
           method: 'POST',
           body: JSON.stringify({ token: resetToken, new_password: password }),
         });
+        const url = new URL(location.href);
+        url.searchParams.delete('reset_token');
+        history.replaceState(null, '', url);
         setMode('login');
         setMessage('Password changed. Sign in.');
       }
     } catch (cause) {
-      setError((cause as Error).message);
+      setError(
+        (cause as Error).message +
+          (cause instanceof ApiError && cause.fields.length
+            ? ` ${cause.fields.map((field) => `${field.field}: ${field.message}`).join(' ')}`
+            : ''),
+      );
     } finally {
       setBusy(false);
     }
   }
-
   return (
     <div className="auth">
-      <form className="panel" onSubmit={submit}>
+      <form className="panel" noValidate onSubmit={submit}>
         <span className="eyebrow">Brightloop Software</span>
         <h1>
           {mode === 'login'
@@ -67,10 +91,16 @@ export function Auth({ onLogin }: Props) {
                 ? 'Reset password'
                 : 'Set new password'}
         </h1>
+        <ErrorBox error={error} focus />
         {mode === 'register' && (
           <label>
             Name
-            <input required value={name} onChange={(event) => setName(event.target.value)} />
+            <input
+              autoComplete="name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              disabled={busy}
+            />
           </label>
         )}
         {mode !== 'confirm' && (
@@ -78,9 +108,10 @@ export function Auth({ onLogin }: Props) {
             Email
             <input
               type="email"
-              required
+              autoComplete="username"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
+              disabled={busy}
             />
           </label>
         )}
@@ -88,27 +119,44 @@ export function Auth({ onLogin }: Props) {
           <label>
             Reset token
             <input
-              required
               value={resetToken}
               onChange={(event) => setResetToken(event.target.value)}
+              disabled={busy}
             />
           </label>
         )}
         {mode !== 'reset' && (
-          <label>
-            Password
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
+          <div className="auth-password-field">
+            <label htmlFor={passwordId}>Password</label>
+            <div className="password-control">
+              <input
+                id={passwordId}
+                type={show ? 'text' : 'password'}
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={busy}
+              />
+              <button
+                type="button"
+                aria-label={show ? 'Hide password' : 'Show password'}
+                aria-pressed={show}
+                onClick={() => setShow(!show)}
+              >
+                {show ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </div>
         )}
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
+        {['register', 'confirm'].includes(mode) && (
+          <ul className="password-rules" aria-label="Password requirements">
+            {rules.map(([rule, valid]) => (
+              <li key={rule} data-valid={valid}>
+                <span aria-hidden="true">{valid ? '✓' : '○'}</span>
+                {rule}
+              </li>
+            ))}
+          </ul>
         )}
         {message && (
           <p className="notice" role="status">
@@ -127,11 +175,15 @@ export function Auth({ onLogin }: Props) {
                   : 'Change password'}
         </button>
         <div className="auth-links">
-          <button type="button" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => changeMode(mode === 'login' ? 'register' : 'login')}
+          >
             {mode === 'login' ? 'Create account' : 'Back to sign in'}
           </button>
           {mode === 'login' && (
-            <button type="button" onClick={() => setMode('reset')}>
+            <button type="button" disabled={busy} onClick={() => changeMode('reset')}>
               Forgot password
             </button>
           )}

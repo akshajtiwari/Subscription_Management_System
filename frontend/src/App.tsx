@@ -496,6 +496,8 @@ export function App() {
       setDetailError((cause as Error).message);
     }
   }
+  const resetToken = new URL(location.href).searchParams.get('reset_token');
+  if (resetToken) return <Auth onLogin={loggedIn} initialResetToken={resetToken} />;
   if (checking)
     return (
       <div className="auth">
@@ -713,7 +715,7 @@ export function App() {
       </div>
       {route.id && (
         <Dialog
-          title={selected?.number || selected?.name || 'Record details'}
+          title={selected?.name || selected?.number || 'Record details'}
           wide
           onClose={() => navigate(route.resource)}
         >

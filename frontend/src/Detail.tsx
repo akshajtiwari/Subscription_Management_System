@@ -477,6 +477,13 @@ export function Detail({
           {row.action === 'password_reset' && (
             <label className="field">
               <span>Reset token</span>
+              <a
+                href={`/?reset_token=${encodeURIComponent(row.detail?.token || '')}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open reset link
+              </a>
               <input
                 readOnly
                 value={row.detail?.token || ''}
