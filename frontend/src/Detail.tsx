@@ -5,7 +5,7 @@ import { Empty, ErrorBox, Loading, Status, amount, day, label } from './ui';
 export function ItemLines({ row, invoice = false }: { row: Row; invoice?: boolean }) {
   const currency = row.currency || row.plan?.currency || 'USD';
   return (
-    <div className="table-wrap">
+    <div className="tablewrap">
       <table>
         <thead>
           <tr>
@@ -87,6 +87,7 @@ export function Detail({
   onEdit,
   onOpen,
   onDownload,
+  showActions = true,
 }: {
   kind: string;
   row: Row;
@@ -96,6 +97,7 @@ export function Detail({
   onEdit: () => void;
   onOpen: (kind: string, id: number) => void;
   onDownload: () => void;
+  showActions?: boolean;
 }) {
   const [history, setHistory] = useState<Row[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -115,28 +117,6 @@ export function Detail({
     return () => controller.abort();
   }, [kind, row.id, row.version, token]);
   const currency = row.currency || row.plan?.currency || 'USD';
-  const internal = user.role !== 'customer';
-  const edit =
-    (user.role === 'admin' &&
-      ['products', 'plans', 'tax-rules', 'discount-rules', 'staff', 'quotation-templates'].includes(
-        kind,
-      )) ||
-    (internal &&
-      ((kind === 'subscriptions' && row.status === 'draft') || kind === 'quotation-templates'));
-  const actions: string[] =
-    kind === 'requests'
-      ? internal && row.status === 'pending'
-        ? ['approve', 'reject']
-        : internal && row.status === 'approved'
-          ? ['reject']
-          : []
-      : kind === 'invoices'
-        ? internal
-          ? row.available_actions || []
-          : []
-        : kind === 'subscriptions'
-          ? row.available_actions || []
-          : [];
   return (
     <div className="detail-body">
       <div className="detail-status">
@@ -161,7 +141,7 @@ export function Detail({
                 ]}
               />
               <h3>Variants</h3>
-              <div className="table-wrap">
+              <div className="tablewrap">
                 <table>
                   <thead>
                     <tr>
@@ -258,7 +238,7 @@ export function Detail({
               {row[name]?.length ? (
                 <div className="related-records">
                   {row[name].map((record: Row) => (
-                    <button key={record.id} onClick={() => onOpen(name, record.id)}>
+                    <button className="btn" key={record.id} onClick={() => onOpen(name, record.id)}>
                       <span>{record.number}</span>
                       <Status value={record.status} />
                     </button>
@@ -372,7 +352,7 @@ export function Detail({
           </dl>
           <h3>Payments</h3>
           {row.payments?.length ? (
-            <div className="table-wrap">
+            <div className="tablewrap">
               <table>
                 <thead>
                   <tr>
@@ -434,7 +414,10 @@ export function Detail({
                   {row.failures.map((failure: Row, index: number) => (
                     <tr key={index}>
                       <td>
-                        <button onClick={() => onOpen('subscriptions', failure.subscription_id)}>
+                        <button
+                          className="btn"
+                          onClick={() => onOpen('subscriptions', failure.subscription_id)}
+                        >
                           Subscription {failure.subscription_id}
                         </button>
                       </td>
@@ -454,7 +437,7 @@ export function Detail({
           values={[
             [
               'Subscription',
-              <button onClick={() => onOpen('subscriptions', row.subscription_id)}>
+              <button className="btn" onClick={() => onOpen('subscriptions', row.subscription_id)}>
                 Open subscription
               </button>,
             ],
@@ -502,47 +485,98 @@ export function Detail({
           )}
         </>
       )}
-      <div className="detail-actions">
-        {edit && (
-          <button type="button" onClick={onEdit}>
-            Edit
+      {showActions && (
+        <RecordActions
+          kind={kind}
+          row={row}
+          user={user}
+          onAction={onAction}
+          onEdit={onEdit}
+          onDownload={onDownload}
+        />
+      )}
+    </div>
+  );
+}
+
+export function RecordActions({
+  kind,
+  row,
+  user,
+  onAction,
+  onEdit,
+  onDownload,
+}: {
+  kind: string;
+  row: Row;
+  user: User;
+  onAction: (action: string) => void;
+  onEdit: () => void;
+  onDownload: () => void;
+}) {
+  const internal = user.role !== 'customer';
+  const edit =
+    (user.role === 'admin' &&
+      ['products', 'plans', 'tax-rules', 'discount-rules', 'staff', 'quotation-templates'].includes(
+        kind,
+      )) ||
+    (internal &&
+      ((kind === 'subscriptions' && row.status === 'draft') || kind === 'quotation-templates'));
+  const actions: string[] =
+    kind === 'requests'
+      ? internal && row.status === 'pending'
+        ? ['approve', 'reject']
+        : internal && row.status === 'approved'
+          ? ['reject']
+          : []
+      : kind === 'invoices'
+        ? internal
+          ? row.available_actions || []
+          : []
+        : kind === 'subscriptions'
+          ? row.available_actions || []
+          : [];
+  return (
+    <div className="detail-actions actions">
+      {edit && (
+        <button className="btn" type="button" onClick={onEdit}>
+          Edit
+        </button>
+      )}
+      {actions.map((action) => (
+        <button
+          key={action}
+          type="button"
+          className={action === 'confirm' || action === 'activate' ? 'primary' : ''}
+          onClick={() => onAction(action)}
+        >
+          {user.role === 'customer' && kind === 'subscriptions' ? 'Request ' : ''}
+          {label(action)}
+        </button>
+      ))}
+      {kind === 'invoices' && !['draft', 'canceled'].includes(row.status || '') && (
+        <>
+          <button className="btn" type="button" onClick={onDownload}>
+            PDF
+          </button>
+          <button className="btn" type="button" onClick={() => window.print()}>
+            Print
+          </button>
+        </>
+      )}
+      {kind === 'invoices' &&
+        internal &&
+        row.status === 'confirmed' &&
+        Number(row.amount_due) > 0 && (
+          <button className="btn primary" onClick={() => onAction('payment')}>
+            Record payment
           </button>
         )}
-        {actions.map((action) => (
-          <button
-            key={action}
-            type="button"
-            className={action === 'confirm' || action === 'activate' ? 'primary' : ''}
-            onClick={() => onAction(action)}
-          >
-            {user.role === 'customer' && kind === 'subscriptions' ? 'Request ' : ''}
-            {label(action)}
-          </button>
-        ))}
-        {kind === 'invoices' && !['draft', 'canceled'].includes(row.status || '') && (
-          <>
-            <button type="button" onClick={onDownload}>
-              PDF
-            </button>
-            <button type="button" onClick={() => window.print()}>
-              Print
-            </button>
-          </>
-        )}
-        {kind === 'invoices' &&
-          internal &&
-          row.status === 'confirmed' &&
-          Number(row.amount_due) > 0 && (
-            <button className="primary" onClick={() => onAction('payment')}>
-              Record payment
-            </button>
-          )}
-        {kind === 'billing-runs' && row.failed_count > 0 && (
-          <button className="primary" onClick={() => onAction('retry')}>
-            Retry failed
-          </button>
-        )}
-      </div>
+      {kind === 'billing-runs' && row.failed_count > 0 && (
+        <button className="btn primary" onClick={() => onAction('retry')}>
+          Retry failed
+        </button>
+      )}
     </div>
   );
 }

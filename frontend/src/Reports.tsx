@@ -87,6 +87,7 @@ export function Reports({
         </Field>
         {!overview && (from || to) && (
           <button
+            className="btn"
             onClick={() => {
               setFrom('');
               setTo('');
@@ -97,7 +98,11 @@ export function Reports({
         )}
       </div>
       <ErrorBox error={error} />
-      {error && <button onClick={() => setRetry((value) => value + 1)}>Retry</button>}
+      {error && (
+        <button className="btn" onClick={() => setRetry((value) => value + 1)}>
+          Retry
+        </button>
+      )}
       {busy && <Loading />}
       <div className="metric-strip">
         <div>
@@ -141,7 +146,7 @@ export function Reports({
               ))}
             </div>
             {!overview && (
-              <div className="table-wrap">
+              <div className="tablewrap">
                 <table>
                   <thead>
                     <tr>
@@ -172,7 +177,7 @@ export function Reports({
           <h2>Overdue invoices</h2>
           <span className="muted">{outstanding.length} invoices</span>
         </div>
-        <div className="table-wrap">
+        <div className="tablewrap">
           <table>
             <thead>
               <tr>

@@ -5,3 +5,6 @@ backend/
 **/__pycache__/
 **/playwright-report/
 **/test-results/
+
+# Preserve the approved runtime stylesheet byte for byte.
+**/workspace.css

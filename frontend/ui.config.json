@@ -1,0 +1,13 @@
+{
+  "sourceRoots": ["frontend/src"],
+  "ownership": { "Select/Listbox": "native", "Date": "native" },
+  "commands": {
+    "verify": "pyenv exec python manage.py verify",
+    "e2e": "pyenv exec python manage.py test-e2e"
+  },
+  "requiredCommands": ["verify", "e2e"],
+  "evidence": {
+    "crudFullFlow": "frontend/tests/e2e/workflows.spec.ts",
+    "failurePaths": "frontend/tests/e2e/workflows.spec.ts"
+  }
+}

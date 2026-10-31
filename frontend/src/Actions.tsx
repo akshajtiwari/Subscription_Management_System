@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { ApiError, actionHeaders, request, type Row } from './api';
 import { CatalogPicker } from './CatalogPicker';
-import { Dialog, ErrorBox, Field, amount, day, label, today } from './ui';
+import { Dialog, ErrorBox, Field, Textarea, amount, day, label, today } from './ui';
 
 export type Command = {
   title: string;
@@ -52,15 +52,15 @@ export function Review({
         {command.summary && <p className="review-summary">{command.summary}</p>}
         <ErrorBox error={error} focus />
         <div className="dialog-actions">
-          <button type="button" disabled={busy} onClick={onClose}>
+          <button className="btn" type="button" disabled={busy} onClick={onClose}>
             Cancel
           </button>
           {stale ? (
-            <button type="button" className="primary" onClick={onReload}>
+            <button type="button" className="btn primary" onClick={onReload}>
               Reload record
             </button>
           ) : (
-            <button className="primary" disabled={busy}>
+            <button className="btn primary" disabled={busy}>
               {busy ? 'Working…' : command.title}
             </button>
           )}
@@ -114,7 +114,7 @@ export function PaymentDialog({
     }
   }
   return (
-    <Dialog title="Record payment" onClose={onClose} busy={busy}>
+    <Dialog title="Record payment" onClose={onClose} busy={busy} variant="editor">
       <form noValidate onSubmit={submit}>
         <p className="review-summary">
           {invoice.number} · Amount due {amount(invoice.amount_due, invoice.currency)}
@@ -146,14 +146,19 @@ export function PaymentDialog({
             />
           </Field>
           <Field name="Note" wide>
-            <textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} />
+            <Textarea
+              className="resize-none"
+              rows={3}
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
           </Field>
         </div>
         <div className="dialog-actions">
-          <button type="button" disabled={busy} onClick={onClose}>
+          <button className="btn" type="button" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button className="primary" disabled={busy}>
+          <button className="btn primary" disabled={busy}>
             {busy ? 'Recording…' : 'Record payment'}
           </button>
         </div>
@@ -217,10 +222,10 @@ export function BillingDialog({
         </Field>
         {retry && <p>{retry.failed_count} failed subscriptions</p>}
         <div className="dialog-actions">
-          <button type="button" disabled={busy} onClick={onClose}>
+          <button className="btn" type="button" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button className="primary" disabled={busy}>
+          <button className="btn primary" disabled={busy}>
             {busy ? 'Running…' : retry ? 'Retry failed' : 'Run billing'}
           </button>
         </div>
@@ -289,7 +294,7 @@ export function ChangeDialog({
         <ErrorBox error={error} focus />
         {action === 'add_on' ? (
           <>
-            <button type="button" onClick={() => setPicker(true)}>
+            <button className="btn" type="button" onClick={() => setPicker(true)}>
               {product ? 'Change add-on' : 'Select add-on'}
             </button>
             {product && (
@@ -314,10 +319,10 @@ export function ChangeDialog({
           <p>Next billing date: {day(subscription.next_billing_date)}</p>
         )}
         <div className="dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>
+          <button className="btn" type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="primary" disabled={busy}>
+          <button className="btn primary" disabled={busy}>
             {busy ? 'Requesting…' : 'Send request'}
           </button>
         </div>

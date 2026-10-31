@@ -2,10 +2,23 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Auth } from './Auth';
 import { request, downloadInvoice, type Row, type User } from './api';
 import { BillingDialog, ChangeDialog, PaymentDialog, Review, type Command } from './Actions';
-import { Detail } from './Detail';
 import { Editor } from './Editor';
 import { Reports } from './Reports';
-import { Dialog, Empty, ErrorBox, Field, Loading, Status, amount, day, label } from './ui';
+import {
+  Dialog,
+  Empty,
+  ErrorBox,
+  Field,
+  Loading,
+  SearchInput,
+  Status,
+  amount,
+  day,
+  label,
+} from './ui';
+import { Icon } from './Icon';
+import { Overview } from './Overview';
+import { RecordPage } from './RecordPage';
 
 const resources = [
   { id: 'overview', title: 'Overview', group: 'Billing operations', icon: 'grid' },
@@ -32,15 +45,6 @@ const resources = [
 ];
 const configurations = new Set(['products', 'plans', 'tax-rules', 'discount-rules']);
 const creatable = new Set([...configurations, 'staff', 'quotation-templates', 'subscriptions']);
-const singular: Record<string, string> = {
-  products: 'product',
-  plans: 'plan',
-  'tax-rules': 'tax rule',
-  'discount-rules': 'discount rule',
-  staff: 'staff member',
-  'quotation-templates': 'quotation template',
-  subscriptions: 'subscription',
-};
 const statusOptions: Record<string, string[]> = {
   subscriptions: [
     'draft',
@@ -67,28 +71,6 @@ const routeFromHash = () => {
   const [resource, id] = location.hash.slice(1).split('/');
   return { resource: resource || 'overview', id: /^\d+$/.test(id || '') ? Number(id) : null };
 };
-
-function Icon({ name }: { name: string }) {
-  const paths: Record<string, string> = {
-    grid: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
-    users:
-      'M16 21v-2a5 5 0 0 0-5-5H6a5 5 0 0 0-5 5v2 M17 4a4 4 0 0 1 0 8 M22 21v-2a5 5 0 0 0-3-4 M8.5 3a4 4 0 1 0 0 8a4 4 0 0 0 0-8',
-    user: 'M5 21v-2a7 7 0 0 1 14 0v2 M12 3a4 4 0 1 0 0 8a4 4 0 0 0 0-8',
-    file: 'M5 3h9l5 5v13H5z M14 3v6h5 M9 13h6 M9 17h6',
-    repeat: 'M4 8a6 6 0 0 1 6-4h9l-3-3 M20 16a6 6 0 0 1-6 4H5l3 3 M19 4l-3 3 M5 20l3-3',
-    card: 'M3 5h18v14H3z M3 10h18 M7 15h4',
-    chart: 'M3 3v18h18 M6 16l4-5 4 2 6-8',
-    box: 'M3 7l9-4 9 4-9 4z M3 7v10l9 4 9-4V7 M12 11v10',
-    calendar: 'M3 5h18v16H3z M7 2v6 M17 2v6 M3 11h18',
-    settings: 'M3 6h18 M3 12h18 M3 18h18 M8 3v6 M16 9v6 M10 15v6',
-    tag: 'M3 4h8l10 10-7 7L3 10z M7 7h1',
-  };
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d={paths[name] || paths.file} />
-    </svg>
-  );
-}
 
 function Account({
   user,
@@ -128,7 +110,7 @@ function Account({
       <Field name="Role">
         <input value={label(user.role)} readOnly />
       </Field>
-      <button className="primary" disabled={busy}>
+      <button className="btn primary" disabled={busy}>
         {busy ? 'Saving…' : 'Save changes'}
       </button>
     </form>
@@ -257,7 +239,13 @@ function columns(kind: string): Column[] {
 }
 
 export function App() {
-  const [token, setToken] = useState(localStorage.getItem('brightloop-token') || ''),
+  const [token, setToken] = useState(() => {
+      try {
+        return localStorage.getItem('brightloop-token') || '';
+      } catch {
+        return '';
+      }
+    }),
     [user, setUser] = useState<User | null>(null),
     [checking, setChecking] = useState(Boolean(token));
   const [route, setRoute] = useState(routeFromHash),
@@ -277,10 +265,17 @@ export function App() {
     [payment, setPayment] = useState(false),
     [change, setChange] = useState<string | null>(null),
     [billing, setBilling] = useState<{ retry?: Row } | null>(null);
+  const [notes, setNotes] = useState(false);
   const [mobile, setMobile] = useState(matchMedia('(max-width: 860px)').matches),
     [mobileOpen, setMobileOpen] = useState(false),
     [collapsed, setCollapsed] = useState(
-      localStorage.getItem('brightloop-nav-collapsed') === 'true',
+      (() => {
+        try {
+          return localStorage.getItem('brightloop-nav-collapsed') === 'true';
+        } catch {
+          return false;
+        }
+      })(),
     );
   const resourceRef = useRef(route.resource);
   const sidebar = useRef<HTMLElement>(null),
@@ -288,7 +283,7 @@ export function App() {
   const resource = resources.find((item) => item.id === route.resource);
   const visible = resources.filter((item) =>
     user?.role === 'customer'
-      ? ['subscriptions', 'invoices', 'requests', 'account'].includes(item.id)
+      ? ['overview', 'subscriptions', 'invoices', 'requests', 'account'].includes(item.id)
       : user?.role === 'staff'
         ? !['staff', 'outbox'].includes(item.id)
         : true,
@@ -299,17 +294,25 @@ export function App() {
     (user.role === 'admin' ||
       (user.role === 'staff' && ['subscriptions', 'quotation-templates'].includes(route.resource)));
   function logout() {
-    localStorage.removeItem('brightloop-token');
+    try {
+      localStorage.removeItem('brightloop-token');
+    } catch {
+      /* Storage is optional. */
+    }
     setToken('');
     setUser(null);
     setRows([]);
     setSelected(null);
   }
   function loggedIn(nextToken: string, account: User) {
-    localStorage.setItem('brightloop-token', nextToken);
+    try {
+      localStorage.setItem('brightloop-token', nextToken);
+    } catch {
+      /* Keep this session in memory. */
+    }
     setToken(nextToken);
     setUser(account);
-    navigate(account.role === 'customer' ? 'subscriptions' : 'overview');
+    navigate('overview');
   }
   function completed(message: string) {
     setNotice(message);
@@ -428,7 +431,7 @@ export function App() {
           .finally(() => {
             if (!controller.signal.aborted) setBusy(false);
           }),
-      search ? 250 : 0,
+      search ? 300 : 0,
     );
     return () => {
       clearTimeout(timer);
@@ -496,6 +499,9 @@ export function App() {
       setDetailError((cause as Error).message);
     }
   }
+  useEffect(() => {
+    document.title = `${resource?.title || 'Sign in'} · Brightloop`;
+  }, [resource?.title, user]);
   const resetToken = new URL(location.href).searchParams.get('reset_token');
   if (resetToken) return <Auth onLogin={loggedIn} initialResetToken={resetToken} />;
   if (checking)
@@ -507,27 +513,79 @@ export function App() {
   if (!user) return <Auth onLogin={loggedIn} />;
   const tableColumns = columns(route.resource);
   const expanded = mobile ? mobileOpen : !collapsed;
+  const inPageEditor = editor && !['staff', 'tax-rules'].includes(editor.kind);
+  const pageName =
+    user.role === 'customer' && route.resource === 'overview'
+      ? 'My account'
+      : resource?.title || 'Overview';
+  const descriptions: Record<string, string> = {
+    overview:
+      user.role === 'customer'
+        ? 'Your plans, invoices, and upcoming billing in one view.'
+        : 'Subscriptions, collections, and invoices that need a closer look.',
+    customers: 'Find a customer and open their account.',
+    products: 'Products, prices, variants and active state.',
+    plans: 'Billing intervals, pricing and availability.',
+    'tax-rules': 'Admin-managed tax rules and effective dates.',
+    'discount-rules': 'Usage limits, eligibility, scope and schedule.',
+    'quotation-templates': 'Reusable plan and product line sets.',
+    subscriptions: 'Lifecycle, renewal date, customer and plan.',
+    invoices: 'Status, due date, amounts and overdue filtering.',
+    payments: 'Payment method, date, invoice and amount.',
+    reports: 'Revenue, collections, active subscriptions and overdue breakdown.',
+    'billing-runs': 'Review invoices created for each due date.',
+    staff: 'Admin-only directory of internal users and access status.',
+    requests: 'Review customer subscription changes.',
+    outbox: 'Invoice messages and password reset links.',
+    account: 'Your account details.',
+  };
+  const editorView = editor && (
+    <Editor
+      key={`${editor.kind}:${editor.initial?.id || 'new'}`}
+      token={token}
+      kind={editor.kind}
+      initial={editor.initial}
+      inline={Boolean(inPageEditor)}
+      onClose={() => setEditor(null)}
+      onSaved={() => {
+        setEditor(null);
+        completed('Saved');
+        navigate(editor.kind);
+      }}
+    />
+  );
+  function openRow(row: Row) {
+    if (user?.role === 'admin' && configurations.has(route.resource))
+      setEditor({ kind: route.resource, initial: row });
+    else navigate(route.resource, row.id);
+  }
   return (
     <div
-      className={`app-shell ${collapsed ? 'nav-collapsed' : ''} ${mobileOpen ? 'nav-open' : ''}`}
+      className={`app app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${mobileOpen ? 'nav-open' : ''}`}
     >
       <button
         ref={toggle}
-        className={`nav-toggle ${expanded ? 'is-open' : ''}`}
+        className={`icon-btn menu-btn mobile-menu-toggle ${expanded ? 'is-open' : ''}`}
         aria-label={expanded ? 'Collapse navigation' : 'Expand navigation'}
         aria-controls="sidebar"
         aria-expanded={expanded}
         onClick={() => {
           if (mobile) setMobileOpen(!mobileOpen);
           else {
-            localStorage.setItem('brightloop-nav-collapsed', String(!collapsed));
+            try {
+              localStorage.setItem('brightloop-nav-collapsed', String(!collapsed));
+            } catch {
+              /* Optional preference. */
+            }
             setCollapsed(!collapsed);
           }
         }}
       >
-        <span />
-        <span />
-        <span />
+        <span className="menu-lines" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
       </button>
       {mobile && mobileOpen && (
         <button
@@ -545,194 +603,139 @@ export function App() {
         inert={!expanded}
         aria-hidden={!expanded}
       >
-        <div className="brand">
-          <span className="brand-symbol">b·</span>
-          <strong>brightloop</strong>
+        <div className="brand-row">
+          <div className="brand-copy">
+            <strong>brightloop</strong>
+          </div>
         </div>
-        <div className="workspace">Brightloop Software</div>
-        <nav>
-          {[...new Set(visible.map((item) => item.group))].map((group) => (
-            <div className="nav-group" key={group}>
-              <span className="nav-heading">
-                {user.role === 'customer' && group === 'Billing operations'
-                  ? 'My workspace'
-                  : group}
-              </span>
-              {visible
-                .filter((item) => item.group === group)
-                .map((item) => (
-                  <button
-                    key={item.id}
-                    aria-current={route.resource === item.id ? 'page' : undefined}
-                    onClick={() => navigate(item.id)}
-                  >
-                    <Icon name={item.icon} />
-                    <span>
-                      {user.role === 'customer' && item.id === 'subscriptions'
-                        ? 'My subscriptions'
-                        : user.role === 'customer' && item.id === 'invoices'
-                          ? 'My invoices'
+        <div className="workspace">
+          <span>
+            <strong>Brightloop Software</strong>
+          </span>
+        </div>
+        <nav className="navs" aria-label="Screens">
+          {[
+            ...new Set(
+              visible
+                .filter((item) => item.id !== 'account')
+                .map((item) => (user.role === 'customer' ? 'Customer portal' : item.group)),
+            ),
+          ].map((group) => (
+            <details className="nav-group-wrap" key={group} open>
+              <summary>
+                <span className="section-label">
+                  <Icon
+                    name={
+                      group === 'Catalog & pricing'
+                        ? 'box'
+                        : group === 'Team access'
+                          ? 'users'
+                          : group === 'Customer portal'
+                            ? 'user'
+                            : 'grid'
+                    }
+                  />
+                  {group}
+                </span>
+                <Icon name="chevron" />
+              </summary>
+              <div className="nav-items">
+                {visible
+                  .filter(
+                    (item) =>
+                      item.id !== 'account' && (user.role === 'customer' || item.group === group),
+                  )
+                  .map((item) => (
+                    <button
+                      className={`nav ${route.resource === item.id ? 'active' : ''}`}
+                      key={item.id}
+                      aria-current={route.resource === item.id ? 'page' : undefined}
+                      onClick={() => navigate(item.id)}
+                    >
+                      <Icon name={item.icon} />
+                      <span>
+                        {user.role === 'customer'
+                          ? {
+                              overview: 'My account',
+                              subscriptions: 'My subscriptions',
+                              invoices: 'My invoices',
+                              requests: 'My requests',
+                            }[item.id] || item.title
                           : item.title}
-                    </span>
-                  </button>
-                ))}
-            </div>
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            </details>
           ))}
         </nav>
-        <div className="sidebar-account">
-          <span>{user.name}</span>
-          <small>{label(user.role)}</small>
-          <button onClick={logout}>Sign out</button>
-        </div>
       </aside>
-      <div className="workspace-main" inert={mobile && mobileOpen}>
+      <div className="main workspace-main" inert={mobile && mobileOpen}>
         <header className="topbar">
-          <span>
-            Workspace <i>/</i> {resource?.title || 'Overview'}
-          </span>
-          <span className="account-badge" aria-label={`${user.name}, ${user.role}`}>
-            {user.name
-              .split(' ')
-              .map((part) => part[0])
-              .slice(0, 2)
-              .join('')}
-          </span>
+          <div className="top-left">
+            <button
+              className="icon-btn menu-btn desktop-menu-toggle"
+              aria-label={expanded ? 'Collapse navigation' : 'Expand navigation'}
+              aria-expanded={expanded}
+              aria-controls="sidebar"
+              onClick={() => {
+                setCollapsed(!collapsed);
+                try {
+                  localStorage.setItem('brightloop-nav-collapsed', String(!collapsed));
+                } catch {
+                  /* Optional preference. */
+                }
+              }}
+            >
+              <span className="menu-lines" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+            </button>
+            <div className="crumbs">
+              <span className="crumb-section">Workspace</span>
+              <span className="crumb-divider">/</span>
+              <strong className="crumb-page">{pageName}</strong>
+            </div>
+          </div>
+          <div className="top-right">
+            <button className="notes-trigger" onClick={() => setNotes(true)}>
+              <Icon name="info" />
+              <span>Notes</span>
+            </button>
+            <span className="top-divider" />
+            <button
+              className="avatar"
+              aria-label={`${user.name}, ${user.role}`}
+              onClick={() => navigate('account')}
+            >
+              BL
+            </button>
+          </div>
         </header>
         <main className="canvas" id="main-content">
-          <div className="page-heading">
-            <div>
-              <span className="eyebrow">Brightloop Software</span>
-              <h1>{resource?.title || 'Overview'}</h1>
-            </div>
-            {canCreate && (
-              <button className="primary" onClick={() => setEditor({ kind: route.resource })}>
-                New {singular[route.resource]}
-              </button>
-            )}
-            {route.resource === 'billing-runs' && (
-              <button className="primary" onClick={() => setBilling({})}>
-                Run billing
-              </button>
-            )}
-          </div>
           {notice && (
             <div className="notice" role="status">
               {notice}
-              <button type="button" aria-label="Dismiss notification" onClick={() => setNotice('')}>
+              <button
+                className="icon-btn"
+                aria-label="Dismiss notification"
+                onClick={() => setNotice('')}
+              >
                 ×
               </button>
             </div>
           )}
-          {['overview', 'reports'].includes(route.resource) ? (
-            <Reports
-              token={token}
-              overview={route.resource === 'overview'}
-              revision={revision}
-              onOpen={navigate}
-            />
-          ) : route.resource === 'account' ? (
-            <Account
-              user={user}
-              token={token}
-              onSaved={(account) => {
-                setUser(account);
-                completed('Account updated');
-              }}
-            />
-          ) : (
-            <>
-              <div className="list-toolbar">
-                <Field name="Search">
-                  <input
-                    type="search"
-                    placeholder="Search records"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                  />
-                </Field>
-                {statusOptions[route.resource] && (
-                  <Field name="Status">
-                    <select value={status} onChange={(event) => setStatus(event.target.value)}>
-                      <option value="">All statuses</option>
-                      {statusOptions[route.resource].map((value) => (
-                        <option key={value} value={value}>
-                          {label(value)}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                )}
-              </div>
-              <ErrorBox error={error} />
-              {error && <button onClick={() => setRevision((value) => value + 1)}>Retry</button>}
-              <section className="panel list-panel" aria-busy={busy}>
-                {busy && <Loading />}
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        {tableColumns.map((column) => (
-                          <th key={column.title} className={column.numeric ? 'numeric' : ''}>
-                            {column.title}
-                          </th>
-                        ))}
-                        <th>
-                          <span className="sr-only">Open record</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((row) => (
-                        <tr key={row.id}>
-                          {tableColumns.map((column) => (
-                            <td key={column.title} className={column.numeric ? 'numeric' : ''}>
-                              {column.value(row)}
-                            </td>
-                          ))}
-                          <td>
-                            <button
-                              className="row-open"
-                              aria-label={`Open ${row.number || row.name || row.id}`}
-                              onClick={() => navigate(route.resource, row.id)}
-                            >
-                              Open <span aria-hidden="true">→</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {!busy && !rows.length && (
-                  <Empty>
-                    {search || status ? 'No records match these filters.' : 'No records yet.'}
-                  </Empty>
-                )}
-                {nextCursor && (
-                  <div className="table-footer">
-                    <button disabled={busy} onClick={more}>
-                      Load more
-                    </button>
-                  </div>
-                )}
-              </section>
-            </>
-          )}
-        </main>
-      </div>
-      {route.id && (
-        <Dialog
-          title={selected?.name || selected?.number || 'Record details'}
-          wide
-          onClose={() => navigate(route.resource)}
-        >
-          {selectedBusy ? (
-            <Loading />
-          ) : (
+          {inPageEditor ? (
+            editorView
+          ) : route.id ? (
             <>
               <ErrorBox error={detailError} />
-              {selected && (
-                <Detail
+              {selectedBusy ? (
+                <Loading />
+              ) : selected ? (
+                <RecordPage
                   kind={route.resource}
                   row={selected}
                   user={user}
@@ -740,30 +743,201 @@ export function App() {
                   onAction={act}
                   onEdit={() => setEditor({ kind: route.resource, initial: selected })}
                   onOpen={navigate}
+                  onBack={() => navigate(route.resource)}
                   onDownload={pdf}
                 />
+              ) : (
+                <button className="btn" onClick={() => setRevision((value) => value + 1)}>
+                  Retry
+                </button>
               )}
-              {!selected && detailError && (
-                <button onClick={() => setRevision((value) => value + 1)}>Retry</button>
+            </>
+          ) : (
+            <>
+              <div className="pagehead">
+                <div>
+                  <div className="eyebrow">
+                    {route.resource === 'overview'
+                      ? 'Operations / dashboard'
+                      : route.resource === 'reports' || route.resource === 'billing-runs'
+                        ? 'Operations / report'
+                        : 'Operations / table'}
+                  </div>
+                  <h1>{pageName}</h1>
+                  <p>{descriptions[route.resource]}</p>
+                </div>
+                {canCreate && (
+                  <button
+                    className="btn primary"
+                    onClick={() => setEditor({ kind: route.resource })}
+                  >
+                    Create new <Icon name="arrow" />
+                  </button>
+                )}
+                {route.resource === 'billing-runs' && (
+                  <button className="btn primary" onClick={() => setBilling({})}>
+                    Run billing
+                  </button>
+                )}
+                {route.resource === 'overview' && (
+                  <button
+                    className="btn primary"
+                    onClick={() =>
+                      navigate(user.role === 'customer' ? 'subscriptions' : 'invoices')
+                    }
+                  >
+                    {user.role === 'customer' ? 'View my subscriptions' : 'Review overdue'}
+                    <Icon name="arrow" />
+                  </button>
+                )}
+                {route.resource === 'reports' && (
+                  <button
+                    className="btn primary"
+                    onClick={() => {
+                      setStatus('overdue');
+                      navigate('invoices');
+                    }}
+                  >
+                    View overdue invoices
+                    <Icon name="arrow" />
+                  </button>
+                )}
+              </div>
+              {route.resource === 'overview' ? (
+                <Overview token={token} user={user} revision={revision} onOpen={navigate} />
+              ) : route.resource === 'reports' ? (
+                <Reports token={token} revision={revision} onOpen={navigate} />
+              ) : route.resource === 'account' ? (
+                <>
+                  <Account
+                    user={user}
+                    token={token}
+                    onSaved={(account) => {
+                      setUser(account);
+                      completed('Account updated');
+                    }}
+                  />
+                  <button className="btn" onClick={logout}>
+                    Sign out
+                  </button>
+                </>
+              ) : (
+                <section className="panel list-panel" aria-busy={busy}>
+                  <div className="toolbar">
+                    <Field name="Search records">
+                      <SearchInput
+                        placeholder={`Search ${pageName.toLowerCase()}`}
+                        value={search}
+                        onValueChange={setSearch}
+                      />
+                    </Field>
+                    {statusOptions[route.resource] && (
+                      <Field name="Status">
+                        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+                          <option value="">All records</option>
+                          {statusOptions[route.resource].map((value) => (
+                            <option key={value} value={value}>
+                              {label(value)}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    )}
+                  </div>
+                  <ErrorBox error={error} />
+                  {error && (
+                    <button className="btn" onClick={() => setRevision((value) => value + 1)}>
+                      Retry
+                    </button>
+                  )}
+                  {busy && <Loading />}
+                  <div className="tablewrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          {tableColumns.map((column) => (
+                            <th
+                              key={column.title}
+                              scope="col"
+                              className={column.numeric ? 'numeric' : ''}
+                            >
+                              {column.title}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row) => (
+                          <tr key={row.id} data-go={`${route.resource}/${row.id}`}>
+                            {tableColumns.map((column, index) => (
+                              <td key={column.title} className={column.numeric ? 'numeric' : ''}>
+                                {index === 0 ? (
+                                  <button
+                                    className="row-link"
+                                    aria-label={`Open ${row.number || row.name || row.id}`}
+                                    onClick={() => openRow(row)}
+                                  >
+                                    {column.value(row)}
+                                  </button>
+                                ) : (
+                                  column.value(row)
+                                )}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {!busy && !rows.length && (
+                    <Empty>
+                      {search || status ? 'No records match these filters.' : 'No records yet.'}
+                    </Empty>
+                  )}
+                  <div className="hint list-count">
+                    {rows.length} records · Select a row to open it.
+                  </div>
+                  {nextCursor && (
+                    <div className="table-footer">
+                      <button className="btn" disabled={busy} onClick={more}>
+                        Load more
+                      </button>
+                    </div>
+                  )}
+                </section>
               )}
             </>
           )}
+        </main>
+      </div>
+      {editor && !inPageEditor && editorView}
+      {notes && (
+        <Dialog title="Workspace notes" onClose={() => setNotes(false)}>
+          <p>{descriptions[route.resource]}</p>
+          <div className="actions">
+            <button
+              className="btn"
+              onClick={() => {
+                setNotes(false);
+                navigate('outbox');
+              }}
+            >
+              Demo outbox
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                setNotes(false);
+                navigate('account');
+              }}
+            >
+              My account
+            </button>
+            <button className="btn" onClick={logout}>
+              Sign out
+            </button>
+          </div>
         </Dialog>
-      )}
-      {editor && (
-        <Editor
-          key={`${editor.kind}:${editor.initial?.id || 'new'}`}
-          token={token}
-          kind={editor.kind}
-          initial={editor.initial}
-          onClose={() => setEditor(null)}
-          onSaved={(row) => {
-            const kind = editor.kind;
-            setEditor(null);
-            completed('Saved');
-            navigate(kind, row.id);
-          }}
-        />
       )}
       {review && (
         <Review

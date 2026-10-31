@@ -1,7 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError, actionHeaders, request, type Row } from './api';
 import { CatalogPicker, catalogKey } from './CatalogPicker';
-import { Dialog, Empty, ErrorBox, Field, Loading, amount, today } from './ui';
+import { Dialog, Empty, ErrorBox, Field, Loading, Textarea, amount, today } from './ui';
 
 const ownedFields: Record<string, string[]> = {
   staff: ['name', 'email', 'password', 'active'],
@@ -78,6 +78,56 @@ const titles: Record<string, string> = {
 };
 const currencies = ['USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD', 'SGD', 'JPY', 'KWD'];
 const dateKeys = new Set(['available_from', 'available_until', 'effective_until', 'ends_on']);
+
+function EditorFrame({
+  title,
+  children,
+  onClose,
+  busy,
+  inline,
+}: {
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+  busy: boolean;
+  inline: boolean;
+}) {
+  if (!inline)
+    return (
+      <Dialog title={title} onClose={onClose} busy={busy} variant="editor">
+        {children}
+      </Dialog>
+    );
+  return (
+    <>
+      <div className="pagehead">
+        <div>
+          <div className="eyebrow">
+            <button className="back-link" disabled={busy} onClick={onClose}>
+              ← Back to list
+            </button>
+          </div>
+          <h1>{title}</h1>
+        </div>
+      </div>
+      <div className="split">
+        <section className="panel">
+          <div className="panelhead">
+            <h2>Details</h2>
+          </div>
+          {children}
+        </section>
+        <aside className="panel review-panel">
+          <div className="review-head">Ready to review</div>
+          <h2>Before you continue</h2>
+          <p className="muted">
+            Check the dates, pricing, and permissions against the customer agreement.
+          </p>
+        </aside>
+      </div>
+    </>
+  );
+}
 function defaults(kind: string) {
   const expiry = new Date();
   expiry.setUTCFullYear(expiry.getUTCFullYear() + 1);
@@ -151,12 +201,14 @@ export function Editor({
   initial,
   onClose,
   onSaved,
+  inline = false,
 }: {
   kind: string;
   token: string;
   initial?: Row;
   onClose: () => void;
   onSaved: (row: Row) => void;
+  inline?: boolean;
 }) {
   const [draft, setDraft] = useState<Record<string, any>>(() => ({
     ...defaults(kind),
@@ -369,11 +421,17 @@ export function Editor({
     }
   }
   return (
-    <Dialog
-      title={`${initial ? 'Edit' : 'New'} ${titles[kind]}`}
+    <EditorFrame
+      title={
+        inline
+          ? kind === 'subscriptions'
+            ? 'New subscription'
+            : `${kind === 'quotation-templates' ? 'Template' : kind === 'discount-rules' ? 'Discount' : kind === 'products' ? 'Product' : 'Plan'} editor`
+          : `${initial ? 'Edit' : 'Add'} ${titles[kind]}`
+      }
       onClose={onClose}
       busy={busy}
-      wide={kind !== 'staff' && kind !== 'tax-rules'}
+      inline={inline}
     >
       <form noValidate onSubmit={save}>
         <ErrorBox error={error} focus />
@@ -390,12 +448,24 @@ export function Editor({
         {error &&
           !Object.keys(references).length &&
           ['subscriptions', 'quotation-templates'].includes(kind) && (
-            <button type="button" onClick={() => setRetry((value) => value + 1)}>
+            <button className="btn" type="button" onClick={() => setRetry((value) => value + 1)}>
               Retry loading options
             </button>
           )}
         <div className="form-grid">
-          {kind !== 'subscriptions' && field('name', 'Name')}
+          {kind !== 'subscriptions' &&
+            field(
+              'name',
+              kind === 'products'
+                ? 'Product name'
+                : kind === 'plans'
+                  ? 'Plan name'
+                  : kind === 'quotation-templates'
+                    ? 'Template name'
+                    : ['tax-rules', 'discount-rules'].includes(kind)
+                      ? 'Rule name'
+                      : 'Name',
+            )}
           {kind === 'staff' && (
             <>
               {!initial && (
@@ -419,7 +489,8 @@ export function Editor({
               {field('sales_price', 'Sales price', 'number')}
               {field('cost_price', 'Cost price', 'number')}
               <Field name="Notes" wide>
-                <textarea
+                <Textarea
+                  className="resize-none"
                   rows={3}
                   value={draft.notes}
                   onChange={(event) => set('notes', event.target.value)}
@@ -487,6 +558,7 @@ export function Editor({
                     </label>
                     {!initial && (
                       <button
+                        className="btn"
                         type="button"
                         onClick={() =>
                           set(
@@ -501,6 +573,7 @@ export function Editor({
                   </div>
                 ))}
                 <button
+                  className="btn"
                   type="button"
                   onClick={() =>
                     set('variants', [
@@ -578,6 +651,7 @@ export function Editor({
                         {references.products?.find((row) => row.id === id)?.name || `Product ${id}`}
                       </span>
                       <button
+                        className="btn"
                         type="button"
                         onClick={() =>
                           set(
@@ -590,7 +664,7 @@ export function Editor({
                       </button>
                     </div>
                   ))}
-                  <button type="button" onClick={() => setPicker(true)}>
+                  <button className="btn" type="button" onClick={() => setPicker(true)}>
                     Select products
                   </button>
                 </fieldset>
@@ -661,7 +735,7 @@ export function Editor({
               )}
               <fieldset className="field-wide">
                 <legend>Product lines</legend>
-                <div className="table-wrap">
+                <div className="tablewrap">
                   <table>
                     <thead>
                       <tr>
@@ -718,6 +792,7 @@ export function Editor({
                             </td>
                             <td>
                               <button
+                                className="btn"
                                 type="button"
                                 aria-label={`Remove ${item?.name || line.name || 'product'}`}
                                 onClick={() =>
@@ -737,7 +812,12 @@ export function Editor({
                   </table>
                   {!draft.lines.length && <Empty>Select at least one product.</Empty>}
                 </div>
-                <button type="button" onClick={() => setPicker(true)} disabled={!draft.plan_id}>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => setPicker(true)}
+                  disabled={!draft.plan_id}
+                >
                   Add product
                 </button>
                 {plan && (
@@ -752,10 +832,10 @@ export function Editor({
           {!['staff', 'subscriptions'].includes(kind) && checkbox('active', 'Active')}
         </div>
         <div className="dialog-actions">
-          <button type="button" onClick={onClose} disabled={busy}>
+          <button className="btn" type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="primary" disabled={busy || loading || customerBusy}>
+          <button className="btn primary" disabled={busy || loading || customerBusy}>
             {busy ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -777,6 +857,6 @@ export function Editor({
           }}
         />
       )}
-    </Dialog>
+    </EditorFrame>
   );
 }

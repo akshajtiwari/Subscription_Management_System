@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { request, type Row } from './api';
-import { Dialog, Empty, ErrorBox, Field, Loading, amount } from './ui';
+import { Dialog, Empty, ErrorBox, Field, Loading, SearchInput, amount } from './ui';
 
 export const catalogKey = (row: Row) => `${row.product_id}:${row.variant_id ?? 'base'}`;
 
@@ -51,7 +51,7 @@ export function CatalogPicker({
             if (!controller.signal.aborted) setBusy(false);
           });
       },
-      search ? 250 : 0,
+      search ? 300 : 0,
     );
     return () => {
       clearTimeout(timer);
@@ -65,19 +65,23 @@ export function CatalogPicker({
     setChosen(next);
   }
   return (
-    <Dialog title="Select products" onClose={onClose} wide>
-      <Field name="Search products">
-        <input
-          type="search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Name, SKU, or variant"
-          autoFocus
-        />
-      </Field>
+    <Dialog title="Add product lines" onClose={onClose} wide variant="picker">
+      <div className="picker-search">
+        <Field name="Search products">
+          <SearchInput
+            value={search}
+            onValueChange={setSearch}
+            placeholder="Name, SKU, or variant"
+            autoFocus
+          />
+        </Field>
+      </div>
       <ErrorBox error={error} />
       {busy && <Loading />}
-      <div className="table-wrap picker-table">
+      <p className="picker-result" aria-live="polite">
+        {rows.length} products
+      </p>
+      <div className="picker-tablewrap">
         <table>
           <thead>
             <tr>
@@ -111,13 +115,13 @@ export function CatalogPicker({
         </table>
         {!busy && !rows.length && <Empty>No products match your search.</Empty>}
       </div>
-      <div className="dialog-actions">
+      <div className="picker-footer">
         <span>{chosen.size} selected</span>
-        <button type="button" onClick={onClose}>
+        <button className="btn" type="button" onClick={onClose}>
           Cancel
         </button>
         <button
-          className="primary"
+          className="btn primary"
           type="button"
           disabled={!chosen.size}
           onClick={() => onApply([...chosen.values()])}
