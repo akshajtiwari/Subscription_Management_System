@@ -8,6 +8,7 @@ import re
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,9 +19,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DbSession
 
 from .db import Event, Idempotency, Invoice, Payment, Record, Session, User, init_db
-from .rules import invoice_amount, invoice_balance, money, next_date
+from .rules import (
+    invoice_amount,
+    invoice_balance,
+    money,
+    next_date,
+    term_length,
+    renewal_date,
+    resume_date,
+    subscription_actions,
+)
 from .pdf import invoice_pdf
-from .schemas import PaymentInput, SCHEMAS, parse_record
+from .schemas import CustomerChange, PaymentInput, SCHEMAS, parse_record
 
 app = FastAPI(title="Brightloop demo API", version="1.0")
 
@@ -60,14 +70,6 @@ KINDS = {
     "billing-runs",
 }
 ADMIN_ONLY = {"products", "plans", "tax-rules", "discount-rules"}
-TRANSITIONS = {
-    "quote": ("draft", "quotation"),
-    "confirm": ("quotation", "confirmed"),
-    "activate": ("confirmed", "active"),
-    "pause": ("active", "paused"),
-    "resume": ("paused", "active"),
-    "close": ("active", "closed"),
-}
 
 
 class Credentials(BaseModel):
@@ -164,6 +166,38 @@ def record_json(record):
         "status": record.status,
         "owner_id": record.owner_id,
         "version": record.version,
+    }
+
+
+def pending_request(session, record_id):
+    return session.scalar(
+        select(Record)
+        .where(
+            Record.kind == "requests",
+            Record.status.in_(["pending", "approved"]),
+            Record.payload["subscription_id"].as_integer() == record_id,
+        )
+        .order_by(Record.id.desc())
+    )
+
+
+def record_view(session, record, user):
+    result = record_json(record)
+    if record.kind != "subscriptions":
+        return result
+    plan = session.get(Record, record.payload["plan_id"])
+    today = datetime.now(ZoneInfo(record.payload.get("billing_timezone", "UTC"))).date()
+    actions = subscription_actions(
+        record.status, record.payload, plan.payload, today, customer=user.role == "customer"
+    )
+    pending = pending_request(session, record.id)
+    if record.payload.get("pending_change") or user.role == "customer" and pending:
+        actions = []
+    return {
+        **result,
+        "plan": {"id": plan.id, **plan.payload},
+        "available_actions": actions,
+        "pending_request": record_json(pending) if pending else None,
     }
 
 
@@ -337,6 +371,8 @@ def catalog_items(
         select(Record).where(Record.kind == "products", Record.status == "active")
     ):
         data = product.payload
+        if user.role == "customer" and data.get("type") != "add_on":
+            continue
         currency = data.get("currency", "USD")
         base = money(data.get("sales_price", "0"), currency)
         rows.append(
@@ -365,6 +401,51 @@ def catalog_items(
                     }
                 )
     return {"data": [row for row in rows if search.lower() in str(row).lower()][:100]}
+
+
+def resolve_lines(session, selections, currency):
+    lines = []
+    for line in selections:
+        product = session.get(Record, line.get("product_id"))
+        if (
+            not product
+            or product.kind != "products"
+            or product.status != "active"
+            or product.payload.get("currency", "USD") != currency
+        ):
+            fail("catalog_item_unavailable")
+        try:
+            quantity = int(line["quantity"])
+        except (KeyError, TypeError, ValueError):
+            fail("invalid_quantity")
+        if quantity <= 0:
+            fail("invalid_quantity")
+        variant_id = line.get("variant_id")
+        variant = None
+        if variant_id is not None:
+            try:
+                variant = product.payload.get("variants", [])[int(variant_id)]
+            except (ValueError, IndexError, TypeError):
+                fail("catalog_item_unavailable")
+            if not variant.get("active", True):
+                fail("catalog_item_unavailable")
+        price = money(product.payload.get("sales_price", 0), currency) + money(
+            variant.get("price_adjustment", 0) if variant else 0, currency
+        )
+        if price < 0:
+            fail("invalid_price")
+        lines.append(
+            {
+                "product_id": product.id,
+                "variant_id": variant_id,
+                "name": product.payload.get("name", ""),
+                "variant_name": variant.get("name") if variant else None,
+                "quantity": quantity,
+                "unit_price": str(price),
+                "currency": currency,
+            }
+        )
+    return lines
 
 
 def resolved_subscription(session, payload):
@@ -403,49 +484,8 @@ def resolved_subscription(session, payload):
     if int(payload.get("payment_terms_days", 0)) < 0:
         fail("invalid_payment_terms")
     currency = plan.payload.get("currency", "USD")
-    lines = []
-    quantity_total = 0
-    for line in payload["lines"]:
-        product = session.get(Record, line.get("product_id"))
-        if (
-            not product
-            or product.kind != "products"
-            or product.status != "active"
-            or product.payload.get("currency", "USD") != currency
-        ):
-            fail("catalog_item_unavailable")
-        try:
-            quantity = int(line["quantity"])
-        except (KeyError, TypeError, ValueError):
-            fail("invalid_quantity")
-        if quantity <= 0:
-            fail("invalid_quantity")
-        quantity_total += quantity
-        variant_id = line.get("variant_id")
-        variant = None
-        if variant_id is not None:
-            try:
-                variant = product.payload.get("variants", [])[int(variant_id)]
-            except (ValueError, IndexError, TypeError):
-                fail("catalog_item_unavailable")
-            if not variant.get("active", True):
-                fail("catalog_item_unavailable")
-        price = money(product.payload.get("sales_price", 0), currency) + money(
-            variant.get("price_adjustment", 0) if variant else 0, currency
-        )
-        if price < 0:
-            fail("invalid_price")
-        lines.append(
-            {
-                "product_id": product.id,
-                "variant_id": variant_id,
-                "name": product.payload.get("name", ""),
-                "variant_name": variant.get("name") if variant else None,
-                "quantity": quantity,
-                "unit_price": str(price),
-                "currency": currency,
-            }
-        )
+    lines = resolve_lines(session, payload["lines"], currency)
+    quantity_total = sum(line["quantity"] for line in lines)
     if quantity_total < int(plan.payload.get("minimum_quantity", 1)):
         fail("minimum_quantity")
     return {
@@ -453,6 +493,9 @@ def resolved_subscription(session, payload):
         "lines": lines,
         "currency": currency,
         "next_billing_date": payload["start_date"],
+        **term_length(
+            date.fromisoformat(payload["start_date"]), date.fromisoformat(payload["expiry_date"])
+        ),
     }
 
 
@@ -541,51 +584,78 @@ def billing_run(
         return previous.result
     due_on = date.fromisoformat(body["due_on"])
     counts = {"created_count": 0, "skipped_count": 0, "failed_count": 0, "failures": []}
+    failed_subscriptions = set()
     for subscription in session.scalars(
         select(Record).where(Record.kind == "subscriptions").with_for_update()
     ):
-        change = subscription.payload.get("pending_change")
+        plan = session.get(Record, subscription.payload["plan_id"])
         if (
-            not change
-            or date.fromisoformat(
-                subscription.payload.get("next_billing_date", subscription.payload["start_date"])
-            )
-            > due_on
+            subscription.status == "confirmed"
+            and subscription.payload["start_date"] <= due_on.isoformat()
         ):
+            subscription.status = "active"
+            subscription.version += 1
+            event(session, "subscriptions", subscription.id, "auto_activated")
+        change = subscription.payload.get("pending_change")
+        next_on = date.fromisoformat(
+            subscription.payload.get("next_billing_date", subscription.payload["start_date"])
+        )
+        if not change or next_on > due_on:
+            if subscription.status == "paused":
+                counts["skipped_count"] += 1
+                if (
+                    plan.payload.get("auto_close")
+                    and subscription.payload["expiry_date"] <= due_on.isoformat()
+                ):
+                    subscription.status = "closed"
+                    subscription.version += 1
+                    event(session, "subscriptions", subscription.id, "auto_closed")
             continue
         try:
             action = change["action"]
             payload = {
                 key: value for key, value in subscription.payload.items() if key != "pending_change"
             }
+            if action not in subscription_actions(
+                subscription.status, payload, plan.payload, due_on, customer=True
+            ):
+                raise ValueError("action_unavailable")
             if action == "add_on":
-                updated = resolved_subscription(
+                new_lines = resolve_lines(
                     session,
-                    {
-                        **payload,
-                        "lines": payload["lines"]
-                        + [
-                            {
-                                "product_id": change["product_id"],
-                                "variant_id": change.get("variant_id"),
-                                "quantity": change["quantity"],
-                            }
-                        ],
-                    },
+                    [
+                        {
+                            "product_id": change["product_id"],
+                            "variant_id": change.get("variant_id"),
+                            "quantity": change["quantity"],
+                        }
+                    ],
+                    payload["currency"],
                 )
-                payload = {**updated, "next_billing_date": payload["next_billing_date"]}
+                payload["lines"] = payload["lines"] + new_lines
             elif action == "renew":
-                plan_for_change = get_record(session, "plans", payload["plan_id"], user).payload
-                payload["expiry_date"] = next_date(
-                    date.fromisoformat(payload["expiry_date"]), plan_for_change["billing_interval"]
+                payload["expiry_date"] = renewal_date(payload).isoformat()
+            elif action == "resume":
+                subscription.status = "active"
+                payload["next_billing_date"] = resume_date(
+                    payload, plan.payload["billing_interval"], due_on
                 ).isoformat()
-            elif action in {"pause", "close", "resume"}:
-                subscription.status = {"pause": "paused", "close": "closed", "resume": "active"}[
-                    action
-                ]
+            else:
+                subscription.status = {"pause": "paused", "close": "closed"}[action]
             subscription.payload = payload
+            subscription.version += 1
+            request = (
+                session.get(Record, change.get("request_id")) if change.get("request_id") else None
+            )
+            if request:
+                request.status = "applied"
+                request.version += 1
+                event(session, "requests", request.id, "applied")
             event(session, "subscriptions", subscription.id, f"approved_{action}")
+            if subscription.status != "active":
+                counts["skipped_count"] += 1
         except (KeyError, ValueError) as exc:
+            failed_subscriptions.add(subscription.id)
             counts["failed_count"] += 1
             counts["failures"].append(
                 {"subscription_id": subscription.id, "reason": f"approved_change: {exc}"}
@@ -595,6 +665,8 @@ def billing_run(
         .where(Record.kind == "subscriptions", Record.status == "active")
         .with_for_update()
     ):
+        if subscription.id in failed_subscriptions:
+            continue
         try:
             plan = get_record(session, "plans", subscription.payload["plan_id"], user).payload
             next_on = date.fromisoformat(
@@ -616,7 +688,7 @@ def billing_run(
                     if plan.get("allow_renewal"):
                         subscription.payload = {
                             **subscription.payload,
-                            "expiry_date": next_date(expiry, plan["billing_interval"]).isoformat(),
+                            "expiry_date": renewal_date(subscription.payload).isoformat(),
                         }
                         event(session, "subscriptions", subscription.id, "auto_renewed")
                     else:
@@ -630,7 +702,10 @@ def billing_run(
                         date.fromisoformat(subscription.payload["start_date"]).day,
                     )
                 )
-                end = next_date(next_on, plan["billing_interval"], anchor_day)
+                end = min(
+                    next_date(next_on, plan["billing_interval"], anchor_day),
+                    date.fromisoformat(subscription.payload["expiry_date"]),
+                )
                 existing = session.scalar(
                     select(Invoice).where(
                         Invoice.subscription_id == subscription.id,
@@ -683,6 +758,7 @@ def billing_run(
                 **subscription.payload,
                 "next_billing_date": next_on.isoformat(),
             }
+            subscription.version += 1
             if cycles == 400 and next_on <= due_on:
                 counts["failed_count"] += 1
                 counts["failures"].append(
@@ -966,7 +1042,7 @@ def list_records(
     if search:
         records = [x for x in records if search.lower() in str(record_json(x)).lower()]
     return {
-        "data": [record_json(x) for x in records[:limit]],
+        "data": [record_view(session, x, user) for x in records[:limit]],
         "next_cursor": records[limit - 1].id if len(records) > limit else None,
     }
 
@@ -976,7 +1052,7 @@ def my_subscriptions(user: User = Depends(current), session: DbSession = Depends
     allowed(user, "customer")
     return {
         "data": [
-            record_json(x)
+            record_view(session, x, user)
             for x in session.scalars(
                 select(Record).where(Record.kind == "subscriptions", Record.owner_id == user.id)
             )
@@ -989,7 +1065,7 @@ def my_subscription(
     record_id: int, user: User = Depends(current), session: DbSession = Depends(db)
 ):
     allowed(user, "customer")
-    return record_json(get_record(session, "subscriptions", record_id, user))
+    return record_view(session, get_record(session, "subscriptions", record_id, user), user)
 
 
 @app.post("/api/v1/{kind}", status_code=201)
@@ -1023,7 +1099,7 @@ def create_record(
     session.flush()
     event(session, kind, record.id, "created", user.id)
     session.commit()
-    return record_json(record)
+    return record_view(session, record, user)
 
 
 @app.get("/api/v1/{kind}/{record_id}")
@@ -1034,7 +1110,7 @@ def read_record(
         fail("not_found", 404)
     if user.role == "customer" and kind not in {"subscriptions", "requests"}:
         fail("forbidden", 403)
-    return record_json(get_record(session, kind, record_id, user))
+    return record_view(session, get_record(session, kind, record_id, user), user)
 
 
 @app.patch("/api/v1/{kind}/{record_id}")
@@ -1075,7 +1151,7 @@ def update_record(
     record.version += 1
     event(session, kind, record.id, "updated", user.id)
     session.commit()
-    return record_json(record)
+    return record_view(session, record, user)
 
 
 @app.post("/api/v1/subscriptions/{record_id}/{action}")
@@ -1087,55 +1163,39 @@ def subscription_action(
     session: DbSession = Depends(db),
 ):
     allowed(user, "admin", "staff")
-    record = get_record(session, "subscriptions", record_id, user)
+    record = get_record(session, "subscriptions", record_id, user, lock=True)
     check_version(record.version, if_match)
-    if action == "renew":
-        if record.status not in {"active", "awaiting_renewal"}:
-            fail("invalid_transition", 409)
-        plan = get_record(session, "plans", record.payload["plan_id"], user)
-        if not plan.payload.get("allow_renewal"):
-            fail("plan_disallows_renewal", 409)
-        record.payload = {
-            **record.payload,
-            "expiry_date": next_date(
-                date.fromisoformat(record.payload["expiry_date"]), plan.payload["billing_interval"]
-            ).isoformat(),
-        }
+    plan = session.get(Record, record.payload["plan_id"])
+    today = datetime.now(ZoneInfo(record.payload.get("billing_timezone", "UTC"))).date()
+    if action not in record_view(session, record, user)["available_actions"]:
+        fail("action_unavailable", 409)
+    payload = record.payload.copy()
+    if action == "quote":
+        record.status = "quotation"
+        payload["quote_expires_at"] = (
+            today + timedelta(days=int(payload.get("validity_days", 30)))
+        ).isoformat()
+    elif action == "confirm":
+        record.status = "confirmed"
+    elif action == "activate":
         record.status = "active"
+        payload["next_billing_date"] = max(payload["start_date"], today.isoformat())
+    elif action == "renew":
+        payload["expiry_date"] = renewal_date(payload).isoformat()
+        if record.status == "awaiting_renewal":
+            record.status = "active"
+    elif action == "resume":
+        record.status = "active"
+        payload["next_billing_date"] = resume_date(
+            payload, plan.payload["billing_interval"], today
+        ).isoformat()
     else:
-        transition = TRANSITIONS.get(action)
-        if not transition or record.status != transition[0]:
-            fail("invalid_transition", 409)
-        if (
-            action == "confirm"
-            and record.payload.get("quote_expires_at", "9999-12-31") < date.today().isoformat()
-        ):
-            fail("quotation_expired", 409)
-        if action in {"pause", "close"}:
-            plan = get_record(session, "plans", record.payload["plan_id"], user)
-            if (
-                action == "pause"
-                and not plan.payload.get("allow_pause")
-                or action == "close"
-                and not plan.payload.get("allow_early_close")
-            ):
-                fail("plan_disallows_action", 409)
-        record.status = transition[1]
-        if action == "quote":
-            validity = max(int(record.payload.get("validity_days", 30)), 1)
-            record.payload = {
-                **record.payload,
-                "quote_expires_at": (date.today() + timedelta(days=validity)).isoformat(),
-            }
-        if action == "activate":
-            record.payload = {
-                **record.payload,
-                "next_billing_date": max(record.payload["start_date"], date.today().isoformat()),
-            }
+        record.status = {"pause": "paused", "close": "closed"}[action]
+    record.payload = payload
     record.version += 1
     event(session, "subscriptions", record.id, action, user.id)
     session.commit()
-    return record_json(record)
+    return record_view(session, record, user)
 
 
 @app.get("/api/v1/subscriptions/{record_id}/history")
@@ -1162,52 +1222,40 @@ def subscription_history(
 
 @app.post("/api/v1/me/subscriptions/{record_id}/requests", status_code=201)
 def customer_request(
-    record_id: int, body: dict, user: User = Depends(current), session: DbSession = Depends(db)
+    record_id: int,
+    body: CustomerChange,
+    user: User = Depends(current),
+    session: DbSession = Depends(db),
 ):
     allowed(user, "customer")
-    subscription = get_record(session, "subscriptions", record_id, user)
-    if body.get("action") not in {"add_on", "pause", "resume", "renew", "close"}:
-        fail("invalid_action")
-    plan = session.get(Record, subscription.payload["plan_id"])
-    permission = {
-        "pause": "allow_pause",
-        "renew": "allow_renewal",
-        "close": "allow_early_close",
-    }.get(body["action"])
-    if permission and (not plan or not plan.payload.get(permission)):
-        fail("plan_disallows_action", 409)
-    if (
-        body["action"] == "resume"
-        and subscription.status != "paused"
-        or body["action"] == "pause"
-        and subscription.status != "active"
-    ):
-        fail("invalid_transition", 409)
-    if body["action"] == "add_on":
-        if not body.get("product_id") or int(body.get("quantity", 0)) <= 0:
-            fail("missing_add_on")
-        resolved_subscription(
+    subscription = get_record(session, "subscriptions", record_id, user, lock=True)
+    if body.action not in record_view(session, subscription, user)["available_actions"]:
+        fail("action_unavailable", 409)
+    if body.action == "add_on":
+        product = session.get(Record, body.product_id)
+        if not product or product.payload.get("type") != "add_on":
+            fail("add_on_unavailable")
+        resolve_lines(
             session,
-            {
-                **subscription.payload,
-                "lines": subscription.payload["lines"]
-                + [
-                    {
-                        "product_id": body["product_id"],
-                        "variant_id": body.get("variant_id"),
-                        "quantity": body["quantity"],
-                    }
-                ],
-            },
+            [
+                {
+                    "product_id": body.product_id,
+                    "variant_id": body.variant_id,
+                    "quantity": body.quantity,
+                }
+            ],
+            subscription.payload["currency"],
         )
     request = Record(
         kind="requests",
         number=f"REQ-{secrets.token_hex(4).upper()}",
         owner_id=user.id,
         status="pending",
-        payload={"subscription_id": subscription.id, **body},
+        payload={**body.model_dump(mode="json"), "subscription_id": subscription.id},
     )
     session.add(request)
+    session.flush()
+    event(session, "requests", request.id, "requested", user.id)
     session.commit()
     return record_json(request)
 
@@ -1217,15 +1265,28 @@ def decide_request(
     record_id: int, decision: str, user: User = Depends(current), session: DbSession = Depends(db)
 ):
     allowed(user, "admin", "staff")
-    request = get_record(session, "requests", record_id, user)
+    request = get_record(session, "requests", record_id, user, lock=True)
     if request.status != "pending" or decision not in {"approve", "reject"}:
         fail("invalid_transition", 409)
-    request.status = "approved" if decision == "approve" else "rejected"
     if decision == "approve":
         subscription = get_record(
-            session, "subscriptions", request.payload["subscription_id"], user
+            session, "subscriptions", request.payload["subscription_id"], user, lock=True
         )
-        subscription.payload = {**subscription.payload, "pending_change": request.payload}
+        plan = session.get(Record, subscription.payload["plan_id"])
+        today = datetime.now(ZoneInfo(subscription.payload.get("billing_timezone", "UTC"))).date()
+        if subscription.payload.get("pending_change") or request.payload[
+            "action"
+        ] not in subscription_actions(
+            subscription.status, subscription.payload, plan.payload, today, customer=True
+        ):
+            fail("action_unavailable", 409)
+        subscription.payload = {
+            **subscription.payload,
+            "pending_change": {**request.payload, "request_id": request.id},
+        }
+        subscription.version += 1
+    request.status = "approved" if decision == "approve" else "rejected"
+    request.version += 1
     event(session, "requests", request.id, decision, user.id)
     session.commit()
     return record_json(request)

@@ -211,3 +211,18 @@ SCHEMAS = {
 
 def parse_record(kind, payload):
     return SCHEMAS[kind].model_validate(payload).model_dump(mode="json")
+
+
+class CustomerChange(Input):
+    action: Literal["add_on", "pause", "resume", "renew", "close"]
+    product_id: PositiveId | None = None
+    variant_id: int | None = Field(default=None, ge=0)
+    quantity: int = Field(default=1, gt=0)
+
+    @model_validator(mode="after")
+    def add_on_requires_product(self):
+        if self.action == "add_on" and not self.product_id:
+            raise ValueError("missing_add_on")
+        if self.action != "add_on" and (self.product_id is not None or self.variant_id is not None):
+            raise ValueError("unexpected_product")
+        return self

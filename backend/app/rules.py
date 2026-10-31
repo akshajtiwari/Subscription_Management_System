@@ -119,3 +119,65 @@ def invoice_amount(plan, lines, discounts, taxes, on: date, jurisdiction=None):
         "total": str(subtotal - discount + tax_total),
         "amount_paid": "0.00",
     }
+
+
+def term_length(start: date, expiry: date):
+    months = (expiry.year - start.year) * 12 + expiry.month - start.month
+    if months > 0 and expiry.day == min(
+        start.day, calendar.monthrange(expiry.year, expiry.month)[1]
+    ):
+        return {"term_months": months, "term_days": (expiry - start).days}
+    return {"term_months": 0, "term_days": (expiry - start).days}
+
+
+def renewal_date(payload):
+    expiry = date.fromisoformat(payload["expiry_date"])
+    length = term_length(date.fromisoformat(payload["start_date"]), expiry)
+    months = int(payload.get("term_months", length["term_months"]))
+    if months:
+        index = expiry.year * 12 + expiry.month - 1 + months
+        year, month = index // 12, index % 12 + 1
+        anchor = date.fromisoformat(payload["start_date"]).day
+        return date(year, month, min(anchor, calendar.monthrange(year, month)[1]))
+    return expiry + timedelta(days=int(payload.get("term_days", length["term_days"])))
+
+
+def resume_date(payload, interval, today):
+    due = date.fromisoformat(payload.get("next_billing_date", payload["start_date"]))
+    anchor = date.fromisoformat(payload["start_date"]).day
+    if interval == "daily":
+        return max(due, today)
+    while due < today:
+        due = next_date(due, interval, anchor)
+    return due
+
+
+def subscription_actions(status, payload, plan, today, customer=False):
+    if status == "closed":
+        return []
+    if not customer:
+        if status == "draft":
+            return ["quote"]
+        if status == "quotation":
+            return (
+                ["quote"]
+                if payload.get("quote_expires_at", "9999-12-31") < today.isoformat()
+                else ["confirm"]
+            )
+        if status == "confirmed":
+            return ["activate"] if payload["start_date"] <= today.isoformat() else []
+    actions = []
+    if status == "active":
+        if customer:
+            actions.append("add_on")
+        if plan.get("allow_pause"):
+            actions.append("pause")
+    if status == "paused" and plan.get("allow_pause"):
+        actions.append("resume")
+    if status in {"active", "paused", "awaiting_renewal"} and plan.get("allow_renewal"):
+        actions.append("renew")
+    if status in {"active", "paused", "awaiting_renewal"} and (
+        plan.get("allow_early_close") or payload["expiry_date"] <= today.isoformat()
+    ):
+        actions.append("close")
+    return actions
