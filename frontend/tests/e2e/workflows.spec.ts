@@ -287,3 +287,30 @@ test('mobile navigation keeps the toggle in place and restores keyboard focus', 
   await expect(create).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+test('failed saves preserve form values and can be retried', async ({ page, isMobile }) => {
+  test.skip(isMobile);
+  await login(page);
+  await nav(page, 'Products');
+  let attempts = 0;
+  await page.route('**/api/v1/products', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    attempts += 1;
+    if (attempts === 1)
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: { code: 'temporarily_unavailable' } }),
+      });
+    return route.continue();
+  });
+  await page.getByRole('button', { name: 'New product', exact: true }).click();
+  const name = `Retry product ${Date.now()}`;
+  await dialog(page).getByLabel('Name', { exact: true }).fill(name);
+  await dialog(page).getByLabel('Sales price', { exact: true }).fill('20');
+  await dialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog(page).getByRole('alert')).toBeVisible();
+  await expect(dialog(page).getByLabel('Name', { exact: true })).toHaveValue(name);
+  await save(page, name);
+  expect(attempts).toBe(2);
+});
