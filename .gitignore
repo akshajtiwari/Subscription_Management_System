@@ -2,7 +2,6 @@ dist/
 *.core
 backend/.venv/
 backend/*.db
-backend/uv.lock
 frontend/node_modules/
 frontend/dist/
 **/__pycache__/
@@ -11,3 +10,5 @@ frontend/dist/
 .pytest_cache/
 *.egg-info/
 *.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
